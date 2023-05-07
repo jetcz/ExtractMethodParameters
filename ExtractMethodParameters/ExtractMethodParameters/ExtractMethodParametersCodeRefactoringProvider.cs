@@ -12,8 +12,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-//todo check named paramters
-//todo paramters with default values
+//todo create default values for props based on typical values of that parameter
 
 namespace ExtractMethodParameters
 {
@@ -42,7 +41,7 @@ namespace ExtractMethodParameters
             // Find the parameter nodes that intersect with the selected text
             List<ParameterSyntax> parameterNodes = methodDeclaration.ParameterList.Parameters
                 .Where(p => p.Span.IntersectsWith(context.Span)
-                        && !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword))) //skip out parameters
+                        && !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword))) //skip out and params parameters
                 .ToList();
 
             if (parameterNodes.Count == 0)
@@ -51,7 +50,7 @@ namespace ExtractMethodParameters
             _methodIdentifier = methodDeclaration.Identifier;
             _documentId = context.Document.Id;
 
-            CustomCodeAction action = CustomCodeAction.Create("Extract method parameters", (c, isPreview) => ExtractParameters(context.Document.Project.Solution, parameterNodes, c, isPreview));
+            CustomCodeAction action = CustomCodeAction.Create("Extract method parameters", (c, isPreview) => Process(context.Document.Project.Solution, parameterNodes, c, isPreview));
 
             context.RegisterRefactoring(action);
         }
@@ -62,7 +61,15 @@ namespace ExtractMethodParameters
         SyntaxToken _methodIdentifier;
         Solution _solution;
 
-        private async Task<Solution> ExtractParameters(Solution solution, List<ParameterSyntax> parameterNodes, CancellationToken cancellationToken, bool isPreview)
+        /// <summary>
+        /// Do the magic
+        /// </summary>
+        /// <param name="solution"></param>
+        /// <param name="parameterNodes">selected parameters</param>
+        /// <param name="cancellationToken"></param>
+        /// <param name="isPreview">true if we are in preview (just the current document), false for the actual code modification in whole solution</param>
+        /// <returns></returns>
+        private async Task<Solution> Process(Solution solution, List<ParameterSyntax> parameterNodes, CancellationToken cancellationToken, bool isPreview)
         {
             _solution = solution;
             _isPreview = isPreview;
@@ -70,13 +77,20 @@ namespace ExtractMethodParameters
 
             ClassDeclarationSyntax classDeclaration = await CreateClassDeclarationAsync(parameterNodes, cancellationToken);
 
-            await FixMethodReferencesAsync(classDeclaration, cancellationToken);
+            await ModifyMethodReferencesAsync(classDeclaration, cancellationToken);
 
-            await FixMethodDeclarationAsync(classDeclaration, parameterNodes, cancellationToken);
+            await ModifyMethodDefinitionAsync(classDeclaration, parameterNodes, cancellationToken);
 
             return _solution;
         }
 
+
+        /// <summary>
+        /// Create class declaration with properties
+        /// </summary>
+        /// <param name="parameterNodes"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
         private async Task<ClassDeclarationSyntax> CreateClassDeclarationAsync(List<ParameterSyntax> parameterNodes, CancellationToken cancellationToken)
         {
             Document document = _solution.GetDocument(_documentId);
@@ -88,6 +102,13 @@ namespace ExtractMethodParameters
 
             // Get the semantic model for the document
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+
+            // Get the trivia for the parameter syntax
+            SyntaxTriviaList methodTrivia = methodSyntax.GetLeadingTrivia();
+
+            // Find the XML comment trivia for the myId parameter
+            SyntaxTrivia xmlCommentTrivia = methodTrivia.FirstOrDefault(t =>
+                t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia));
 
             // Get the current namespace
             NamespaceDeclarationSyntax namespaceSyntax = root.DescendantNodesAndSelf().OfType<NamespaceDeclarationSyntax>().FirstOrDefault();
@@ -101,12 +122,21 @@ namespace ExtractMethodParameters
                 className = $"{methodSyntax.Identifier}Args{i}";
             }
 
+            string xmlComment = $"/// <summary>\n/// {methodSyntax.Identifier} arguments\n/// </summary>\n";
+
             return SyntaxFactory.ClassDeclaration(className)
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
-                .WithMembers(SyntaxFactory.List(CreateProperties(parameterNodes)));
+                .WithMembers(SyntaxFactory.List(CreateProperties(parameterNodes, xmlCommentTrivia.ToString())))
+                .WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment));
         }
 
-        private IEnumerable<MemberDeclarationSyntax> CreateProperties(List<ParameterSyntax> parameterNodes)
+        /// <summary>
+        /// Create class properties with xml comments
+        /// </summary>
+        /// <param name="parameterNodes"></param>
+        /// <param name="methodXmlComment"></param>
+        /// <returns></returns>
+        private IEnumerable<MemberDeclarationSyntax> CreateProperties(List<ParameterSyntax> parameterNodes, string methodXmlComment)
         {
             EqualsValueClauseSyntax emptyString = SyntaxFactory.EqualsValueClause(SyntaxFactory.LiteralExpression(SyntaxKind.StringLiteralExpression, SyntaxFactory.Literal("")));
             EqualsValueClauseSyntax dbIgnoredID = SyntaxFactory.EqualsValueClause(SyntaxFactory.IdentifierName("DB.IgnoredID"));
@@ -114,23 +144,36 @@ namespace ExtractMethodParameters
 
             foreach (ParameterSyntax par in parameterNodes)
             {
-                PropertyDeclarationSyntax propertyDeclaration = SyntaxFactory.PropertyDeclaration(
-                    par.Type,
-                    SyntaxFactory.Identifier(par.Identifier.ValueText))
+                //declare the property
+                PropertyDeclarationSyntax propertyDeclaration = SyntaxFactory.PropertyDeclaration(par.Type, SyntaxFactory.Identifier(Up1stLetter(par.Identifier.ValueText)))
                     .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                     .WithAccessorList(SyntaxFactory.AccessorList(
                         SyntaxFactory.List(new[]
                         {
-                    SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                        .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)),
-                    SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
-                        .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
-                        })));
+                        SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)),
+                        SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+                            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+                        }
+                        )));
 
-                if (_isSang)
+                //steal the xml comment from method
+                int parameterIndex = methodXmlComment.IndexOf($"<param name=\"{par.Identifier.ValueText}\"");
+                if (parameterIndex != -1)
                 {
-                    EqualsValueClauseSyntax init = null;
+                    int commentStartIndex = methodXmlComment.IndexOf(">", parameterIndex) + 1;
+                    int commentEndIndex = methodXmlComment.IndexOf($"</param>", parameterIndex);
 
+                    string comment = methodXmlComment.Substring(commentStartIndex, commentEndIndex - commentStartIndex);
+                    string xmlComment = $"/// <summary>\n/// {comment}\n/// </summary>\n";
+
+                    propertyDeclaration = propertyDeclaration.WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment));
+                }
+
+                EqualsValueClauseSyntax init = par.Default; //get the method parameter default
+
+                if (init is null && _isSang) //ugly hack for sang solution
+                {
                     switch (par.Type.Kind())
                     {
                         case SyntaxKind.PredefinedType:
@@ -153,11 +196,11 @@ namespace ExtractMethodParameters
                             }
                             break;
                     }
+                }
 
-                    if (init != null)
-                    {
-                        propertyDeclaration = propertyDeclaration.WithInitializer(init).WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
-                    }
+                if (init != null)
+                {
+                    propertyDeclaration = propertyDeclaration.WithInitializer(init).WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
                 }
 
                 yield return propertyDeclaration;
@@ -166,11 +209,10 @@ namespace ExtractMethodParameters
 
         /// <summary>
         /// Changes method calls to reflect new method signature
-        /// This has to be called before modifying the method signature otherwise we would be able to find the references
         /// </summary>
         /// <param name="methodSymbol"></param>
         /// <param name="classDeclaration">args</param>
-        private async Task FixMethodReferencesAsync(ClassDeclarationSyntax classDeclaration, CancellationToken cancellationToken)
+        private async Task ModifyMethodReferencesAsync(ClassDeclarationSyntax classDeclaration, CancellationToken cancellationToken)
         {
             //get the method symbol to find references for this method     
             Document document = _solution.GetDocument(_documentId);
@@ -221,9 +263,9 @@ namespace ExtractMethodParameters
                         for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
                         {
                             IParameterSymbol parameter = methodSymbol.Parameters[i];
-                            ArgumentSyntax argument = invocation.ArgumentList.Arguments[i];                    
+                            ArgumentSyntax argument = invocation.ArgumentList.Arguments[i];
 
-                            if (!classProps.TryGetValue(parameter.Name, out PropertyDeclarationSyntax prop))
+                            if (!classProps.TryGetValue(Up1stLetter(parameter.Name), out PropertyDeclarationSyntax prop))
                             {
                                 newArgsForMethodInvocation.Add(argument); //keep the method param as is, we do not have it in our new class
                                 continue;
@@ -239,7 +281,7 @@ namespace ExtractMethodParameters
                             // Create a syntax node for the property assignment
                             AssignmentExpressionSyntax propertyAssignment = SyntaxFactory.AssignmentExpression(
                                 SyntaxKind.SimpleAssignmentExpression,
-                                SyntaxFactory.IdentifierName(parameter.Name),
+                                SyntaxFactory.IdentifierName(prop.Identifier),
                                 argument.Expression)
                                 .WithLeadingTrivia(SyntaxFactory.LineFeed)
                                 .WithoutTrailingTrivia();
@@ -249,7 +291,16 @@ namespace ExtractMethodParameters
                         }
 
                         // Create a variable to hold the arguments class instance
-                        string variableName = "args" + (variableCount == 0 ? "" : variableCount.ToString()); //it would be better to search the current block for occurences of this variable name but hey
+                        string variableName;
+                        var block = syntaxNode.AncestorsAndSelf().OfType<BlockSyntax>().First();
+                        var variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
+                  
+                        do
+                        {
+                            variableName = "args" + (variableCount == 0 ? "" : variableCount.ToString());
+                            variableCount++;
+
+                        } while (variables.Any(x => x.Identifier.ValueText == variableName));
 
                         SyntaxToken argsVar = SyntaxFactory.Identifier(variableName);
 
@@ -277,8 +328,6 @@ namespace ExtractMethodParameters
                         //finally change the root
                         editor.InsertBefore(invocation.Parent, argsVarDecl);
                         editor.ReplaceNode(invocation, newInvocation);
-
-                        variableCount++;
                     }
 
                     SyntaxNode newRoot = editor.GetChangedRoot();
@@ -290,7 +339,14 @@ namespace ExtractMethodParameters
             }
         }
 
-        private async Task FixMethodDeclarationAsync(ClassDeclarationSyntax classDeclaration, List<ParameterSyntax> parameterNodes, CancellationToken cancellationToken)
+        /// <summary>
+        /// Modify method definition - signature and references to the parameters in the body of the method
+        /// </summary>
+        /// <param name="classDeclaration"></param>
+        /// <param name="parameterNodes"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        private async Task ModifyMethodDefinitionAsync(ClassDeclarationSyntax classDeclaration, List<ParameterSyntax> parameterNodes, CancellationToken cancellationToken)
         {
             Document document = _solution.GetDocument(_documentId);
 
@@ -340,7 +396,9 @@ namespace ExtractMethodParameters
                 .Where(identifier => parameterNodes.Any(parameterIdentifier => parameterIdentifier.Identifier.ValueText == identifier.Identifier.ValueText));
 
             BlockSyntax newBody = newMethodSyntax.Body.ReplaceNodes(nodesToReplace,
-                (node, _) => SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, SyntaxFactory.IdentifierName(parameterName), SyntaxFactory.IdentifierName(node.Identifier.ValueText))
+                (node, _) => SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression
+                , SyntaxFactory.IdentifierName(parameterName)
+                , SyntaxFactory.IdentifierName(Up1stLetter(node.Identifier.ValueText)))
                     .WithOperatorToken(SyntaxFactory.Token(SyntaxKind.DotToken))
                     .WithLeadingTrivia(node.GetLeadingTrivia())
                     .WithTrailingTrivia(node.GetTrailingTrivia())
@@ -370,6 +428,13 @@ namespace ExtractMethodParameters
 
             _solution = _solution.WithDocumentSyntaxRoot(document.Id, newRoot);
         }
+
+        /// <summary>
+        /// Capitalize first letter of the string
+        /// </summary>
+        /// <param name="text"></param>
+        /// <returns></returns>
+        private static string Up1stLetter(string text) => text.Substring(0, 1).ToUpper() + text.Substring(1);
 
     }
 }
