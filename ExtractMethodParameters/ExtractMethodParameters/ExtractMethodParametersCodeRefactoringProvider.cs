@@ -5,10 +5,13 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Editing;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Formatting;
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Composition;
+using System.Diagnostics;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -50,7 +53,7 @@ namespace ExtractMethodParameters
                 return;
 
             CustomCodeAction action = CustomCodeAction.Create("Extract method parameters", (c, isPreview) =>
-                Process(context.Document, methodDeclaration.Identifier, parameterNodes, c, isPreview)
+                Process(isPreview, context.Document, methodDeclaration.Identifier, parameterNodes, c)
             );
 
             context.RegisterRefactoring(action);
@@ -61,23 +64,27 @@ namespace ExtractMethodParameters
         SyntaxToken _methodIdentifier;
         ClassDeclarationSyntax _classDeclaration;
         IEnumerable<ReferencedSymbol> _allReferences;
+        Dictionary<DocumentId, SyntaxNode> _roots;
 
         /// <summary>
         /// Do the magic
         /// </summary>
+        /// <param name="isPreview">true if we are in preview (just the current document), false for the actual code modification in whole solution</param>
         /// <param name="document"></param>
         /// <param name="methodIdentifier"></param>
         /// <param name="parameterNodes">selected parameters</param>
         /// <param name="cancellationToken"></param>
-        /// <param name="isPreview">true if we are in preview (just the current document), false for the actual code modification in whole solution</param>
         /// <returns></returns>
-        private async Task<Solution> Process(Document document, SyntaxToken methodIdentifier, ImmutableHashSet<ParameterSyntax> parameterNodes, CancellationToken cancellationToken, bool isPreview)
+        private async Task<Solution> Process(bool isPreview, Document document, SyntaxToken methodIdentifier, ImmutableHashSet<ParameterSyntax> parameterNodes, CancellationToken cancellationToken)
         {
+            Stopwatch sw = Stopwatch.StartNew();
+
             _isPreview = isPreview;
             _documentId = document.Id;
             _methodIdentifier = methodIdentifier;
+            //_roots = new Dictionary<DocumentId, SyntaxNode>();
 
-            var newSolution = document.Project.Solution;
+            Solution newSolution = document.Project.Solution;
 
             _classDeclaration = await CreateClassDeclarationAsync(newSolution, parameterNodes, cancellationToken);
 
@@ -89,10 +96,34 @@ namespace ExtractMethodParameters
             _allReferences = null;
             _classDeclaration = null;
             _documentId = null;
+            //_roots = null;
+
+            Debug.WriteLine($"{nameof(ExtractMethodParametersCodeRefactoringProvider)} isPreview={_isPreview} Elapsed={sw.Elapsed}");
 
             return newSolution;
         }
 
+        /// <summary>
+        /// Get syntax root for given documentId
+        /// Note that when the root is changed, entry from <see cref="_roots"/> must be removed
+        /// </summary>
+        /// <param name="document"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        private async Task<SyntaxNode> GetRoot(Document document, CancellationToken cancellationToken)
+        {
+            return await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+
+            //the caching doesnt seem to have much impact
+            //if (!_roots.TryGetValue(document.Id, out SyntaxNode root))
+            //{
+            //    root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+
+            //    _roots.Add(document.Id, root);
+            //}
+
+            //return root;
+        }
 
         /// <summary>
         /// Create class declaration with properties
@@ -105,7 +136,7 @@ namespace ExtractMethodParameters
         {
             Document document = solution.GetDocument(_documentId);
 
-            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode root = await GetRoot(document, cancellationToken);// await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
             Location methodIdentifierLocation = _methodIdentifier.GetLocation();
             MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
@@ -113,17 +144,11 @@ namespace ExtractMethodParameters
             // Get the semantic model for the document
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
-            // Get the trivia for the parameter syntax
-            SyntaxTriviaList methodTrivia = methodSyntax.GetLeadingTrivia();
-
-            // Find the XML comment trivia for the myId parameter
-            SyntaxTrivia xmlCommentTrivia = methodTrivia.FirstOrDefault(t =>
-                t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia));
-
             // Get the current namespace
             NamespaceDeclarationSyntax namespaceSyntax = root.DescendantNodesAndSelf().OfType<NamespaceDeclarationSyntax>().FirstOrDefault();
             INamespaceSymbol currentNamespaceSymbol = semanticModel.GetDeclaredSymbol(namespaceSyntax);
 
+            // create class name
             int i = 0;
             string className = $"{methodSyntax.Identifier}Args";
             while (currentNamespaceSymbol.GetTypeMembers(className).Any())
@@ -132,11 +157,14 @@ namespace ExtractMethodParameters
                 className = $"{methodSyntax.Identifier}Args{i}";
             }
 
-            string xmlComment = $"/// <summary>\n/// {methodSyntax.Identifier} arguments\n/// </summary>\n";
-
             Dictionary<string, ExpressionSyntax> defaultValues = _isPreview ? null : await GetDefaultValuesForPropertiesAsync(solution, parameterNodes, cancellationToken);
 
+            // Find the XML comment trivia for the method
+            SyntaxTrivia xmlCommentTrivia = methodSyntax.GetLeadingTrivia().FirstOrDefault(t => t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia));
+
             IEnumerable<MemberDeclarationSyntax> properties = CreateProperties(parameterNodes, defaultValues, xmlCommentTrivia.ToString());
+
+            string xmlComment = $"/// <summary>\n/// {methodSyntax.Identifier} arguments\n/// </summary>\n";
 
             return SyntaxFactory.ClassDeclaration(className)
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
@@ -200,6 +228,7 @@ namespace ExtractMethodParameters
             }
         }
 
+
         /// <summary>
         /// Analyze solution for the most common parameter values
         /// </summary>
@@ -212,7 +241,7 @@ namespace ExtractMethodParameters
             //get the method symbol to find references for this method     
             Document document = solution.GetDocument(_documentId);
 
-            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode root = await GetRoot(document, cancellationToken); //await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
             Location methodIdentifierLocation = _methodIdentifier.GetLocation();
             MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
@@ -227,17 +256,23 @@ namespace ExtractMethodParameters
 
             Dictionary<string, Dictionary<ExpressionSyntax, int>> paramsData = new Dictionary<string, Dictionary<ExpressionSyntax, int>>(parameterNodes.Count);
 
+            MyExpressionSyntaxComparer comparer = new MyExpressionSyntaxComparer();
+
+            Dictionary<ExpressionSyntax, bool> usableAsDefaultExpressions = new Dictionary<ExpressionSyntax, bool>(comparer);
+
             foreach (ReferencedSymbol reference in _allReferences)
             {
                 IEnumerable<IGrouping<DocumentId, ReferenceLocation>> groupsByDoc = reference.Locations.GroupBy(x => x.Document.Id);
 
                 foreach (IGrouping<DocumentId, ReferenceLocation> groupByDoc in groupsByDoc)
                 {
+                    semanticModel = null;
+
                     if (groupByDoc.Key != document.Id)
                     {
                         document = solution.GetDocument(groupByDoc.Key);
 
-                        root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                        root = await GetRoot(document, cancellationToken);//await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
                     }
 
                     foreach (ReferenceLocation location in groupByDoc)
@@ -255,9 +290,60 @@ namespace ExtractMethodParameters
                                 continue;
                             }
 
+                            //determine if the argument value can be used as default property initiializer, ie. it is some literal, or static member accessor
+                            bool canBeUsedAsDefaultInitializer = false;
+
+
+                            if (argument.Expression is LiteralExpressionSyntax)
+                            {
+                                canBeUsedAsDefaultInitializer = true;
+                            }
+                            else if (argument.Expression is MemberAccessExpressionSyntax
+                                || argument.Expression is CastExpressionSyntax)
+                            {
+                                if (!usableAsDefaultExpressions.TryGetValue(argument.Expression, out canBeUsedAsDefaultInitializer)) //check cached expressions first for performance
+                                {
+                                    if (semanticModel is null)
+                                    {
+                                        semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                                    }
+
+                                    //check if the argument has constant value (enums, string, number...)
+                                    if (!canBeUsedAsDefaultInitializer)
+                                    {
+                                        Optional<object> constantValue = semanticModel.GetConstantValue(argument.Expression, cancellationToken);
+
+                                        canBeUsedAsDefaultInitializer = constantValue.HasValue;
+                                    }
+
+                                    //check if left hand side is static
+                                    if (!canBeUsedAsDefaultInitializer)
+                                    {
+                                        ISymbol lhsSymbol = semanticModel.GetSymbolInfo(argument.Expression, cancellationToken).Symbol;
+
+                                        canBeUsedAsDefaultInitializer = lhsSymbol?.IsStatic ?? false;
+                                    }
+
+                                    //check if the whole expression is static
+                                    if (!canBeUsedAsDefaultInitializer)
+                                    {
+                                        ISymbol exprSymbol = semanticModel.GetSymbolInfo(argument, cancellationToken).Symbol;
+
+                                        canBeUsedAsDefaultInitializer = exprSymbol?.IsStatic ?? false;
+                                    }
+
+                                    usableAsDefaultExpressions.Add(argument.Expression, canBeUsedAsDefaultInitializer);
+                                }
+                            }
+
+                            if (!canBeUsedAsDefaultInitializer)
+                            {
+                                continue;
+                            }
+
                             if (!paramsData.TryGetValue(parameter.Name, out Dictionary<ExpressionSyntax, int> values))
                             {
-                                values = new Dictionary<ExpressionSyntax, int>(new MyExpressionSyntaxComparer());
+                                values = new Dictionary<ExpressionSyntax, int>(comparer);
                                 paramsData.Add(parameter.Name, values);
                             }
 
@@ -274,15 +360,16 @@ namespace ExtractMethodParameters
                 }
             }
 
+            //pick the most common parameter values
             Dictionary<string, ExpressionSyntax> retval = new Dictionary<string, ExpressionSyntax>(parameterNodes.Count);
 
             foreach (KeyValuePair<string, Dictionary<ExpressionSyntax, int>> paramData in paramsData)
             {
                 Dictionary<ExpressionSyntax, int> expressionOccurences = paramData.Value;
 
-                ExpressionSyntax expression = expressionOccurences.Where(x => x.Value > 1).OrderByDescending(x => x.Value).FirstOrDefault().Key;
+                ExpressionSyntax expression = expressionOccurences.Where(x => x.Value > 1).OrderByDescending(x => x.Value).FirstOrDefault().Key; //only consider occurences 2x and more
 
-                if (expression != default && !expression.IsKind(SyntaxKind.NullLiteralExpression))
+                if (expression != null && !expression.IsKind(SyntaxKind.NullLiteralExpression))
                 {
                     retval.Add(paramData.Key, expression);
                 }
@@ -302,7 +389,7 @@ namespace ExtractMethodParameters
             //get the method symbol to find references for this method     
             Document document = solution.GetDocument(_documentId);
 
-            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode root = await GetRoot(document, cancellationToken); //await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
             Location methodIdentifierLocation = _methodIdentifier.GetLocation();
             MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
@@ -340,7 +427,7 @@ namespace ExtractMethodParameters
                     {
                         document = solution.GetDocument(groupByDoc.Key);
 
-                        root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                        root = await GetRoot(document, cancellationToken); //await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
                     }
 
                     SyntaxEditor editor = new SyntaxEditor(root, solution.Workspace.Services);
@@ -368,9 +455,11 @@ namespace ExtractMethodParameters
                                 continue;
                             }
 
+                            bool sameValueAsDefaultValue = prop.Initializer is null && argument.Expression.IsKind(SyntaxKind.NullLiteralExpression)
+                                || SyntaxFactory.AreEquivalent(prop.Initializer?.Value, argument.Expression);
+
                             //do not initialize property if the property has the same default value as the current method parameter
-                            if (prop.Initializer is null && argument.Expression.IsKind(SyntaxKind.NullLiteralExpression)
-                                || prop.Initializer?.Value?.ToString() == argument.Expression.ToString())
+                            if (sameValueAsDefaultValue)
                             {
                                 continue; // skip this property assignment
                             }
@@ -430,9 +519,11 @@ namespace ExtractMethodParameters
 
                     SyntaxNode newRoot = editor.GetChangedRoot();
 
-                    newRoot = Formatter.Format(newRoot, solution.Workspace);
+                    newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken);
 
                     solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+
+                    //_roots.Remove(document.Id);
                 }
             }
 
@@ -487,6 +578,53 @@ namespace ExtractMethodParameters
 
             newMethodSyntax = newMethodSyntax.WithParameterList(newParameterList);
 
+            //fix xml comment
+            SyntaxTrivia xmlCommentTrivia = methodSyntax.GetLeadingTrivia().FirstOrDefault(t => t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia));
+
+            //this is absolutely horrific but I dont give a shit at this point
+            //we really should be using SyntaxFactory and XmlElements and Attributes for this, but fuck it
+            const string slashes = "///";
+            const string eos = "</summary>";
+
+            if (xmlCommentTrivia != null)
+            {
+                string input = xmlCommentTrivia.ToString();
+                int index = input.IndexOf(eos);
+                if (index >= 0)
+                {
+                    //whitespaces
+                    int start = input.LastIndexOf('\n', index) + 1;
+                    int end = input.IndexOf('\n', index);
+                    if (end == -1)
+                    {
+                        end = input.Length;
+                    }
+                    string line = input.Substring(start, end - start); //get line where "/// </summary>" is
+
+                    string[] parts = line.Split(new[] { slashes }, StringSplitOptions.None);
+                    string whitespaces = parts[0];
+
+                    //new param tags
+                    string paramNames = string.Join("|", newParameters.Select(x => x.Identifier.ValueText));
+
+                    string xmlComment = Regex.Replace(input, $@"^\s*///\s*<param name=""(?!{paramNames})\w+"">.*", "", RegexOptions.Multiline); //replace the param comments which we no longer have
+                    xmlComment = Regex.Replace(xmlComment, @"^\s*$[\r\n]*", "", RegexOptions.Multiline); //replace empty lines beacause chatgpt
+
+                    //create comments for newly added params
+                    IEnumerable<string> newParams = newParameters
+                        .Where(x => !xmlComment.Contains($"<param name=\"{x.Identifier.ValueText}\">"))
+                        .Select(x => $"{whitespaces}{slashes} <param name=\"{x.Identifier.ValueText}\"></param>");
+
+                    string newParamsStr = "\n" + string.Join("\n", newParams);
+
+                    //insert the new params right after </summary> tag
+                    xmlComment = $"{slashes} {xmlComment.Insert(index + eos.Length, newParamsStr).TrimStart()}";
+
+                    //add the trivia as simple comment                  
+                    newMethodSyntax = newMethodSyntax.WithLeadingTrivia(SyntaxFactory.Comment(xmlComment));
+                }
+            }
+
             //fix method body
 
             // Replace all references to the old parameters with references to the new args parameter
@@ -523,7 +661,7 @@ namespace ExtractMethodParameters
 
             SyntaxNode newRoot = editor.GetChangedRoot();
 
-            newRoot = Formatter.Format(newRoot, solution.Workspace);
+            newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken);
 
             return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
         }
@@ -533,7 +671,9 @@ namespace ExtractMethodParameters
         /// </summary>
         /// <param name="text"></param>
         /// <returns></returns>
-        private static string Up1stLetter(string text) => text.Substring(0, 1).ToUpper() + text.Substring(1);
-
+        private static string Up1stLetter(string text)
+        {
+            return text.Substring(0, 1).ToUpper() + text.Substring(1);
+        }
     }
 }
