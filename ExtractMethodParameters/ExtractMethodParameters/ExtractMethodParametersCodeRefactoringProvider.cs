@@ -5,7 +5,6 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Editing;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Formatting;
-using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Composition;
@@ -157,6 +156,7 @@ namespace ExtractMethodParameters
                 className = $"{methodSyntax.Identifier}Args{i}";
             }
 
+            //do not try to figure out default property initializers in preview mode
             Dictionary<string, ExpressionSyntax> defaultValues = _isPreview ? null : await GetDefaultValuesForPropertiesAsync(solution, parameterNodes, cancellationToken);
 
             // Find the XML comment trivia for the method
@@ -195,8 +195,9 @@ namespace ExtractMethodParameters
                             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                         }
                         )));
+                
+                #region xml comments for properties (steal them from the method xml comment)
 
-                //steal the xml comment from method
                 int parameterIndex = methodXmlComment.IndexOf($"<param name=\"{par.Identifier.ValueText}\"");
                 if (parameterIndex != -1)
                 {
@@ -207,10 +208,13 @@ namespace ExtractMethodParameters
                     string xmlComment = $"/// <summary>\n/// {comment}\n/// </summary>\n";
 
                     propertyDeclaration = propertyDeclaration.WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment));
-                }
+                } 
+
+                #endregion
 
                 //handle default value
                 EqualsValueClauseSyntax init = par.Default; //get the method parameter default
+
                 if (init is null
                     && defaultValues != null
                     && defaultValues.TryGetValue(par.Identifier.ValueText, out ExpressionSyntax defaultValue))
@@ -293,6 +297,7 @@ namespace ExtractMethodParameters
                             //determine if the argument value can be used as default property initiializer, ie. it is some literal, or static member accessor
                             bool canBeUsedAsDefaultInitializer = false;
 
+                            #region can this argument be used as default property initializer?
 
                             if (argument.Expression is LiteralExpressionSyntax)
                             {
@@ -334,7 +339,9 @@ namespace ExtractMethodParameters
 
                                     usableAsDefaultExpressions.Add(argument.Expression, canBeUsedAsDefaultInitializer);
                                 }
-                            }
+                            } 
+
+                            #endregion
 
                             if (!canBeUsedAsDefaultInitializer)
                             {
@@ -438,6 +445,8 @@ namespace ExtractMethodParameters
                         SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
                         InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().First();
 
+                        #region build class body initializer
+
                         // Build initializer expression for the new args object
                         InitializerExpressionSyntax initializerExpression = SyntaxFactory.InitializerExpression(
                             SyntaxKind.ObjectInitializerExpression,
@@ -474,7 +483,9 @@ namespace ExtractMethodParameters
 
                             // Add the property assignment to the initializer expression
                             initializerExpression = initializerExpression.AddExpressions(propertyAssignment);
-                        }
+                        } 
+
+                        #endregion
 
                         // Create a variable to hold the arguments class instance
                         // scan the code block if there is the same variable already, create unique name
@@ -545,7 +556,7 @@ namespace ExtractMethodParameters
             Location methodIdentifierLocation = _methodIdentifier.GetLocation();
             MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
 
-            //fix method signature
+            #region fix method signature
 
             // Get the list of parameters from the method's syntax node
             ParameterListSyntax oldParameterList = methodSyntax.DescendantNodes().OfType<ParameterListSyntax>().First();
@@ -576,56 +587,47 @@ namespace ExtractMethodParameters
             // Replace the old parameter list with the new one in the method's syntax node
             MethodDeclarationSyntax newMethodSyntax = methodSyntax.ReplaceNode(oldParameterList, newParameterList);
 
-            newMethodSyntax = newMethodSyntax.WithParameterList(newParameterList);
+            newMethodSyntax = newMethodSyntax.WithParameterList(newParameterList); 
 
-            //fix xml comment
+            #endregion
+
+            #region fix xml comment
+
             SyntaxTrivia xmlCommentTrivia = methodSyntax.GetLeadingTrivia().FirstOrDefault(t => t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia));
-
-            //this is absolutely horrific but I dont give a shit at this point
-            //we really should be using SyntaxFactory and XmlElements and Attributes for this, but fuck it
-            const string slashes = "///";
-            const string eos = "</summary>";
 
             if (xmlCommentTrivia != null)
             {
+                //this is absolutely horrific but I dont give a shit at this point
+                //we really should be using SyntaxFactory and XmlElements and Attributes for this, but fuck it
+                //we assume that there is always </summary> in the comment, if its not, then it wont do anything
                 string input = xmlCommentTrivia.ToString();
-                int index = input.IndexOf(eos);
+                int index = input.IndexOf("</summary>");
                 if (index >= 0)
                 {
-                    //whitespaces
-                    int start = input.LastIndexOf('\n', index) + 1;
-                    int end = input.IndexOf('\n', index);
-                    if (end == -1)
-                    {
-                        end = input.Length;
-                    }
-                    string line = input.Substring(start, end - start); //get line where "/// </summary>" is
-
-                    string[] parts = line.Split(new[] { slashes }, StringSplitOptions.None);
-                    string whitespaces = parts[0];
-
                     //new param tags
-                    string paramNames = string.Join("|", newParameters.Select(x => x.Identifier.ValueText));
+                    string pipeSeparatedParamNames = string.Join("|", newParameters.Select(x => x.Identifier.ValueText));
 
-                    string xmlComment = Regex.Replace(input, $@"^\s*///\s*<param name=""(?!{paramNames})\w+"">.*", "", RegexOptions.Multiline); //replace the param comments which we no longer have
-                    xmlComment = Regex.Replace(xmlComment, @"^\s*$[\r\n]*", "", RegexOptions.Multiline); //replace empty lines beacause chatgpt
+                    string myString = Regex.Replace(input, $@"^\s*///\s*<param name=""(?!{pipeSeparatedParamNames})\w+"">.*", "", RegexOptions.Multiline); //replace the param comments which we no longer have
+                    myString = Regex.Replace(myString, @"^\s*$[\r\n]*", "", RegexOptions.Multiline); //replace empty lines beacause chatgpt
 
-                    //create comments for newly added params
-                    IEnumerable<string> newParams = newParameters
-                        .Where(x => !xmlComment.Contains($"<param name=\"{x.Identifier.ValueText}\">"))
-                        .Select(x => $"{whitespaces}{slashes} <param name=\"{x.Identifier.ValueText}\"></param>");
+                    //create entries for newly added params
+                    IEnumerable<string> newParametersStr = newParameters
+                        .Where(x => !myString.Contains($"<param name=\"{x.Identifier.ValueText}\">"))
+                        .Select(x => $"/// <param name=\"{x.Identifier.ValueText}\"></param>");
 
-                    string newParamsStr = "\n" + string.Join("\n", newParams);
+                    string newParametersStrFragment = "\n" + string.Join("\n", newParametersStr);
 
                     //insert the new params right after </summary> tag
-                    xmlComment = $"{slashes} {xmlComment.Insert(index + eos.Length, newParamsStr).TrimStart()}";
+                    myString = $"/// {myString.Insert(index + "</summary>".Length, newParametersStrFragment).TrimStart()}";
 
-                    //add the trivia as simple comment                  
-                    newMethodSyntax = newMethodSyntax.WithLeadingTrivia(SyntaxFactory.Comment(xmlComment));
+                    //add the trivia               
+                    newMethodSyntax = newMethodSyntax.WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(myString));
                 }
-            }
+            }    
 
-            //fix method body
+            #endregion
+
+            #region fix method body
 
             // Replace all references to the old parameters with references to the new args parameter
             IEnumerable<IdentifierNameSyntax> nodesToReplace = newMethodSyntax.DescendantNodes()
@@ -652,7 +654,9 @@ namespace ExtractMethodParameters
             NamespaceDeclarationSyntax newNamespace = SyntaxFactory.NamespaceDeclaration(SyntaxFactory.ParseName(namespaceName));
 
             // Add the new class declaration to the namespace
-            newNamespace = newNamespace.AddMembers(_classDeclaration);
+            newNamespace = newNamespace.AddMembers(_classDeclaration); 
+
+            #endregion
 
             SyntaxEditor editor = new SyntaxEditor(root, solution.Workspace.Services);
 

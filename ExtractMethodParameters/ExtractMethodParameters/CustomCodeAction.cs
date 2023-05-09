@@ -7,6 +7,9 @@ using Microsoft.CodeAnalysis.CodeActions;
 
 namespace ExtractMethodParameters
 {
+    /// <summary>
+    /// This modified CodeAction is needed just so we know if we are in preview mode or not, otherwise this class would not be needed
+    /// </summary>
     public class CustomCodeAction : CodeAction
     {
         private readonly Func<CancellationToken, bool, Task<Solution>> _createChangedSolution;
