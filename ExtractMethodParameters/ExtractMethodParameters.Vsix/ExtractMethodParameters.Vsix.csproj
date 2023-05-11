@@ -3,9 +3,9 @@
   <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.props" />
 
   <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>
-    <RootNamespace>ExtractMethodParameters</RootNamespace>
-    <AssemblyName>ExtractMethodParameters</AssemblyName>
+    <TargetFramework>net7.0</TargetFramework>
+    <RootNamespace>ExtractMethodParameters.Vsix</RootNamespace>
+    <AssemblyName>ExtractMethodParameters.Vsix</AssemblyName>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -26,13 +26,14 @@
     <StartAction>Program</StartAction>
     <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
     <StartArguments>/rootsuffix $(VSSDKTargetPlatformRegRootSuffix)</StartArguments>
-    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <GeneratePackageOnBuild>False</GeneratePackageOnBuild>
     <Title>Extract Method Parameters</Title>
     <Description>Refactoring Visual Studio extension which extracts method parameters into a new type and uses that new type across whole solution for every reference of that method.</Description>
     <PackageProjectUrl>https://github.com/jetcz/ExtractMethodParameters</PackageProjectUrl>
     <PackageTags>refactoring; extract; method; parameters; class; type; resharper</PackageTags>
     <Authors>$(AssemblyName)</Authors>
-    <Version>$(VersionPrefix)0.1</Version>
+    <Version>$(VersionPrefix)</Version>
+    <SignAssembly>False</SignAssembly>
   </PropertyGroup>
 
   <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.targets" />
@@ -49,10 +50,6 @@
 
     <!-- https://github.com/Microsoft/extendvs/issues/57 -->
     <ProjectReference Update="@(ProjectReference)" Name="%(Filename)" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="Properties\" />
   </ItemGroup>
 
 </Project>
