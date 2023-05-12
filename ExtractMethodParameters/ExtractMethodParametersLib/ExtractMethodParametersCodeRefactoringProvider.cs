@@ -14,7 +14,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace ExtractMethodParameters
+namespace ExtractMethodParametersLib
 {
     /// <summary>
     /// Extract method parameters into new type
@@ -57,6 +57,8 @@ namespace ExtractMethodParameters
 
             context.RegisterRefactoring(action);
         }
+
+
 
         bool _isPreview;
         DocumentId _documentId;

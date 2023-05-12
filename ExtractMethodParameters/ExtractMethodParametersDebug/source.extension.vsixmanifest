@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
 	<Metadata>
-		<Identity Id="ExtractMethodParameters..a2d2406b-3cd7-44c6-ac87-6fb4afe641c3" Version="1.0" Language="en-US" Publisher="jiri.machacek"/>
-		<DisplayName>ExtractMethodParameters</DisplayName>
-		<Description xml:space="preserve">Refactoring Visual Studio extension which extracts method parameters into a new type and uses that new type across whole solution for every reference of that method.</Description>
+		<Identity Id="ExtractMethodParametersDebug..5affcdbc-37d3-405a-9c11-56b6002dc0d6" Version="1.0" Language="en-US" Publisher="jiri.machacek"/>
+		<DisplayName>ExtractMethodParametersDebug</DisplayName>
+		<Description xml:space="preserve">This is just stupid, hours lost, fuck you Microsoft.</Description>
 	</Metadata>
 	<Installation>
 		<InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,)" >

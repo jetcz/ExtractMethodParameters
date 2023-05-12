@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 
-namespace ExtractMethodParameters
+namespace ExtractMethodParametersLib
 {
     /// <summary>
     /// This modified CodeAction is needed just so we know if we are in preview mode or not, otherwise this class would not be needed

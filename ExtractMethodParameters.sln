@@ -7,6 +7,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ExtractMethodParametersLib"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ExtractMethodParameters", "ExtractMethodParameters\ExtractMethodParameters\ExtractMethodParameters.csproj", "{D23E02F1-7244-45D8-8850-FAC7C42A13B8}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ExtractMethodParametersDebug", "ExtractMethodParameters\ExtractMethodParametersDebug\ExtractMethodParametersDebug.csproj", "{C4132481-D824-4F29-9FD2-56A6634AC768}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -18,9 +20,11 @@ Global
 		{F70E2585-F2FB-4CE7-9BEB-70DA8DD1EA43}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F70E2585-F2FB-4CE7-9BEB-70DA8DD1EA43}.Release|Any CPU.Build.0 = Release|Any CPU
 		{D23E02F1-7244-45D8-8850-FAC7C42A13B8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{D23E02F1-7244-45D8-8850-FAC7C42A13B8}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D23E02F1-7244-45D8-8850-FAC7C42A13B8}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D23E02F1-7244-45D8-8850-FAC7C42A13B8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C4132481-D824-4F29-9FD2-56A6634AC768}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C4132481-D824-4F29-9FD2-56A6634AC768}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C4132481-D824-4F29-9FD2-56A6634AC768}.Release|Any CPU.ActiveCfg = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

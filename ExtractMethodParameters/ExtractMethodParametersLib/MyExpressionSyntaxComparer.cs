@@ -2,7 +2,7 @@
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Collections.Generic;
 
-namespace ExtractMethodParameters
+namespace ExtractMethodParametersLib
 {
     public class MyExpressionSyntaxComparer : IEqualityComparer<ExpressionSyntax>
     {
