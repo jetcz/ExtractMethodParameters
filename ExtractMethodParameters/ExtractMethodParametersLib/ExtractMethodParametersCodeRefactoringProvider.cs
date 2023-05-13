@@ -62,7 +62,7 @@ namespace ExtractMethodParametersLib
 
         bool _isPreview;
         DocumentId _documentId;
-        SyntaxToken _methodIdentifier;   
+        SyntaxToken _methodIdentifier;
         IEnumerable<ReferencedSymbol> _allReferences;
         //Dictionary<DocumentId, SyntaxNode> _roots;
 
@@ -94,11 +94,11 @@ namespace ExtractMethodParametersLib
             newSolution = await ModifyMethodDefinitionAsync(newSolution, parameterNodes, classDeclaration, cancellationToken);
 
             //is this needed?
-            _allReferences = null;    
+            _allReferences = null;
             _documentId = null;
             //_roots = null;
 
-            Debug.WriteLine($"{nameof(ExtractMethodParametersCodeRefactoringProvider)} isPreview={_isPreview} Elapsed={sw.Elapsed.TotalMilliseconds}ms");
+            Debug.WriteLine($"{nameof(ExtractMethodParametersCodeRefactoringProvider)} isPreview={_isPreview} Elapsed={sw.Elapsed}");
 
             return newSolution;
         }
@@ -146,7 +146,7 @@ namespace ExtractMethodParametersLib
             // Get the semantic model for the document
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
-            ClassDeclarationSyntax enclosingClass =  methodSyntax.Ancestors().OfType<ClassDeclarationSyntax>().First();
+            ClassDeclarationSyntax enclosingClass = methodSyntax.Ancestors().OfType<ClassDeclarationSyntax>().First();
             INamedTypeSymbol enclosingClassSymbol = semanticModel.GetDeclaredSymbol(enclosingClass);
 
             // create class name       
@@ -202,7 +202,7 @@ namespace ExtractMethodParametersLib
                             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                         }
                         )));
-                
+
                 #region xml comments for properties (steal them from the method xml comment)
 
                 int parameterIndex = methodXmlComment.IndexOf($"<param name=\"{par.Identifier.ValueText}\"");
@@ -215,7 +215,7 @@ namespace ExtractMethodParametersLib
                     string xmlComment = $"/// <summary>\n/// {comment}\n/// </summary>\n";
 
                     propertyDeclaration = propertyDeclaration.WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment));
-                } 
+                }
 
                 #endregion
 
@@ -346,7 +346,7 @@ namespace ExtractMethodParametersLib
 
                                     usableAsDefaultExpressions.Add(argument.Expression, canBeUsedAsDefaultInitializer);
                                 }
-                            } 
+                            }
 
                             #endregion
 
@@ -451,7 +451,7 @@ namespace ExtractMethodParametersLib
 
                     int variableCount = 0;
                     foreach (ReferenceLocation location in groupByDoc)
-                    {
+                    {                     
                         SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
                         InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().First();
 
@@ -493,26 +493,29 @@ namespace ExtractMethodParametersLib
 
                             // Add the property assignment to the initializer expression
                             initializerExpression = initializerExpression.AddExpressions(propertyAssignment);
-                        } 
+                        }
 
                         #endregion
 
-                        // Create a variable to hold the arguments class instance
-                        // scan the code block if there is the same variable already, create unique name             
-                        BlockSyntax block = syntaxNode.AncestorsAndSelf().OfType<BlockSyntax>().First();
+                        //find a block syntax where we put out new variable, we insert int before the target which should be expression syntax                
+                        SyntaxNode target = invocation.Parent;
+                        while (!(target.Parent is BlockSyntax))
+                        {
+                            target = target.Parent;
+                        }
+                        BlockSyntax block = target.Parent as BlockSyntax;
+
+                        // scan the code block if there is the same variable already, create unique name
                         IEnumerable<VariableDeclaratorSyntax> variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
 
                         // create class name       
                         string uniqueVariableName;
+                        do
                         {
-                            string name = "args";                 
-                            uniqueVariableName = name;
-                            while (variables.Any(x => x.Identifier.ValueText == uniqueVariableName))
-                            {
-                                variableCount++;
-                                uniqueVariableName = $"{name}{variableCount}";
-                            }
-                        }
+                            uniqueVariableName = $"args{(variableCount == 0 ? "" : variableCount.ToString())}";
+                            variableCount++;
+
+                        } while (variables.Any(x => x.Identifier.ValueText == uniqueVariableName));
 
                         SyntaxToken argsVar = SyntaxFactory.Identifier(uniqueVariableName);
 
@@ -523,10 +526,11 @@ namespace ExtractMethodParametersLib
                             SyntaxFactory.SeparatedList(newArgsForMethodInvocation)
                         ));
 
+                        // Create a variable to hold the arguments class instance
                         string myClassType = $"{classDeclaration.GetAnnotations("enclosingType").First().Data}.{classDeclaration.Identifier.Text}";
 
                         //declaration of the variable
-                        LocalDeclarationStatementSyntax argsVarDecl = SyntaxFactory.LocalDeclarationStatement(
+                        LocalDeclarationStatementSyntax argsVarDeclStatement = SyntaxFactory.LocalDeclarationStatement(
                             SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName("var"))
                             .WithVariables(SyntaxFactory.SingletonSeparatedList(
                                 SyntaxFactory.VariableDeclarator(argsVar)
@@ -537,7 +541,7 @@ namespace ExtractMethodParametersLib
                                     .WithTrailingTrivia(SyntaxFactory.Space))
                                     .WithArgumentList(SyntaxFactory.ArgumentList()))))));
 
-                        editor.InsertBefore(invocation.Parent, argsVarDecl);
+                        editor.InsertBefore(target, argsVarDeclStatement);
 
                         editor.ReplaceNode(invocation, newInvocation);
                     }
@@ -604,7 +608,7 @@ namespace ExtractMethodParametersLib
             // Replace the old parameter list with the new one in the method's syntax node
             MethodDeclarationSyntax newMethodSyntax = methodSyntax.ReplaceNode(oldParameterList, newParameterList);
 
-            newMethodSyntax = newMethodSyntax.WithParameterList(newParameterList); 
+            newMethodSyntax = newMethodSyntax.WithParameterList(newParameterList);
 
             #endregion
 
@@ -640,7 +644,7 @@ namespace ExtractMethodParametersLib
                     //add the trivia               
                     newMethodSyntax = newMethodSyntax.WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(myString));
                 }
-            }    
+            }
 
             #endregion
 
