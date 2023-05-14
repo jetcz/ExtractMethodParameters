@@ -290,7 +290,13 @@ namespace ExtractMethodParametersLib
                     foreach (ReferenceLocation location in groupByDoc)
                     {
                         SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
-                        InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().First();
+                        InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+
+                        //invocation might be null if the method is referenced e.g. in xml comment as <see cref...
+                        if (invocation is null)
+                        {
+                            continue;
+                        }
 
                         for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
                         {
@@ -305,7 +311,7 @@ namespace ExtractMethodParametersLib
                             //determine if the argument value can be used as default property initiializer, ie. it is some literal, or static member accessor
                             bool canBeUsedAsDefaultInitializer = false;
 
-                            #region can this argument be used as default property initializer?              
+                            #region can this argument be used as default property initializer?
 
                             if (argument.Expression is LiteralExpressionSyntax)
                             {
@@ -328,20 +334,31 @@ namespace ExtractMethodParametersLib
                                         canBeUsedAsDefaultInitializer = constantValue.HasValue;
                                     }
 
-                                    //check if left hand side is static
+                                    //check if for static                                
                                     if (!canBeUsedAsDefaultInitializer)
                                     {
-                                        ISymbol lhsSymbol = semanticModel.GetSymbolInfo(argument.Expression, cancellationToken).Symbol;
+                                        ISymbol symbol = semanticModel.GetSymbolInfo(argument.Expression, cancellationToken).Symbol
+                                            ?? semanticModel.GetSymbolInfo(argument, cancellationToken).Symbol; //?
 
-                                        canBeUsedAsDefaultInitializer = lhsSymbol?.IsStatic ?? false;
-                                    }
-
-                                    //check if the whole expression is static
-                                    if (!canBeUsedAsDefaultInitializer)
-                                    {
-                                        ISymbol exprSymbol = semanticModel.GetSymbolInfo(argument, cancellationToken).Symbol;
-
-                                        canBeUsedAsDefaultInitializer = exprSymbol?.IsStatic ?? false;
+                                        if (symbol?.IsStatic ?? false)
+                                        {
+                                            switch (symbol)
+                                            {
+                                                case IMethodSymbol staticMethodSymbol:
+                                                    canBeUsedAsDefaultInitializer = staticMethodSymbol.Parameters.Length == 0;
+                                                    //actually the method params could be also static fields or props but we dont need to go that deep... this is good enough
+                                                    break;
+                                                case IFieldSymbol staticFieldSymbol:
+                                                case IPropertySymbol staticPropertySymbol:
+                                                    //there is potential problem when the field or prop is not fully qualified in the method argument, but we would need the full qualification in the new class prop initializer
+                                                    //but it is easily manually fixable aftewards so we shall not worry
+                                                    canBeUsedAsDefaultInitializer = true;
+                                                    break;
+                                                default:
+                                                    canBeUsedAsDefaultInitializer = true; //?
+                                                    break;
+                                            }
+                                        }
                                     }
 
                                     usableAsDefaultExpressions.Add(argument.Expression, canBeUsedAsDefaultInitializer);
@@ -451,9 +468,15 @@ namespace ExtractMethodParametersLib
 
                     int variableCount = 0;
                     foreach (ReferenceLocation location in groupByDoc)
-                    {                     
+                    {
                         SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
-                        InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().First();
+                        InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+
+                        //invocation might be null if the method is referenced e.g. in xml comment as <see cref...
+                        if (invocation is null)
+                        {
+                            continue;
+                        }
 
                         #region build class body initializer
 
@@ -543,7 +566,7 @@ namespace ExtractMethodParametersLib
 
                         editor.InsertBefore(target, argsVarDeclStatement);
 
-                        editor.ReplaceNode(invocation, newInvocation);
+                        editor.ReplaceNode(invocation, newInvocation.NormalizeWhitespace());
                     }
 
                     SyntaxNode newRoot = editor.GetChangedRoot();
@@ -676,7 +699,7 @@ namespace ExtractMethodParametersLib
 
             SyntaxNode newRoot = editor.GetChangedRoot();
 
-            newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken);
+            //newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken);
 
             return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
         }
