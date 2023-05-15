@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Composition;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -22,6 +23,12 @@ namespace ExtractMethodParametersLib
     [ExportCodeRefactoringProvider(LanguageNames.CSharp, Name = nameof(ExtractMethodParametersCodeRefactoringProvider)), Shared]
     internal partial class ExtractMethodParametersCodeRefactoringProvider : CodeRefactoringProvider
     {
+        private bool _isPreview;
+        private DocumentId _documentId;
+        private SyntaxToken _methodIdentifier;
+        private IEnumerable<ReferencedSymbol> _allReferences;      
+        private MyExpressionSyntaxComparer _myExpressionSyntaxComparer;
+
         public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
         {
             //exit when user selected less than 3 chars
@@ -42,10 +49,10 @@ namespace ExtractMethodParametersLib
                 .FirstOrDefault();
 
             // Find the parameter nodes that intersect with the selected text
-            ImmutableHashSet<ParameterSyntax> parameterNodes = methodDeclaration.ParameterList.Parameters
+            List<ParameterSyntax> parameterNodes = methodDeclaration.ParameterList.Parameters
                 .Where(p => p.Span.IntersectsWith(context.Span))
                 .Where(p => !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword))) //skip out and params parameters
-                .ToImmutableHashSet();
+                .ToList();
 
             //exit when user selected less than 2 params
             if (parameterNodes.Count < 2)
@@ -58,14 +65,6 @@ namespace ExtractMethodParametersLib
             context.RegisterRefactoring(action);
         }
 
-
-
-        bool _isPreview;
-        DocumentId _documentId;
-        SyntaxToken _methodIdentifier;
-        IEnumerable<ReferencedSymbol> _allReferences;
-        //Dictionary<DocumentId, SyntaxNode> _roots;
-
         /// <summary>
         /// Do the magic
         /// </summary>
@@ -75,56 +74,63 @@ namespace ExtractMethodParametersLib
         /// <param name="parameterNodes">selected parameters</param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        private async Task<Solution> Process(bool isPreview, Document document, SyntaxToken methodIdentifier, ImmutableHashSet<ParameterSyntax> parameterNodes
+        private async Task<Solution> Process(bool isPreview, Document document, SyntaxToken methodIdentifier, List<ParameterSyntax> parameterNodes
             , CancellationToken cancellationToken)
         {
             Stopwatch sw = Stopwatch.StartNew();
 
             _isPreview = isPreview;
             _documentId = document.Id;
-            _methodIdentifier = methodIdentifier;
-            //_roots = new Dictionary<DocumentId, SyntaxNode>();
+            _methodIdentifier = methodIdentifier;      
+            _myExpressionSyntaxComparer = new MyExpressionSyntaxComparer();
 
             Solution newSolution = document.Project.Solution;
 
-            ClassDeclarationSyntax classDeclaration = await CreateClassDeclarationAsync(newSolution, parameterNodes, cancellationToken);
+            List<ParameterSyntax> parameters = CreatePropertyNames(newSolution, parameterNodes).ToList();
+
+            ClassDeclarationSyntax classDeclaration = await CreateClassDeclarationAsync(newSolution, parameters, cancellationToken);
 
             newSolution = await ModifyMethodReferencesAsync(newSolution, classDeclaration, cancellationToken);
 
-            newSolution = await ModifyMethodDefinitionAsync(newSolution, parameterNodes, classDeclaration, cancellationToken);
+            newSolution = await ModifyMethodDefinitionAsync(newSolution, parameters, classDeclaration, cancellationToken);
 
             //is this needed?
             _allReferences = null;
-            _documentId = null;
-            //_roots = null;
 
-            Debug.WriteLine($"{nameof(ExtractMethodParametersCodeRefactoringProvider)} isPreview={_isPreview} Elapsed={sw.Elapsed}");
+            Debug.WriteLine($"{nameof(ExtractMethodParametersCodeRefactoringProvider)} isPreview={_isPreview} elapsed={sw.Elapsed}");
 
             return newSolution;
         }
 
         /// <summary>
-        /// Get syntax root for given documentId
-        /// Note that when the root is changed, entry from <see cref="_roots"/> must be removed
+        /// Process collection of parameters and create the name for our new properties and store it to custom annotation of the PArameterSyntax
+        /// It makes sure the names have a naming convention and are unique
         /// </summary>
-        /// <param name="document"></param>
-        /// <param name="cancellationToken"></param>
+        /// <param name="solution"></param>
+        /// <param name="parameterNodes"></param>
         /// <returns></returns>
-        private async Task<SyntaxNode> GetRoot(Document document
-            , CancellationToken cancellationToken)
+        private IEnumerable<ParameterSyntax> CreatePropertyNames(Solution solution, List<ParameterSyntax> parameterNodes)
         {
-            return await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            string solutionName = Path.GetFileNameWithoutExtension(solution.FilePath);
 
-            //the caching doesnt seem to have much impact
-            //if (!_roots.TryGetValue(document.Id, out SyntaxNode root))
-            //{
-            //    root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            IPropertyNameNormalizer propertyNameNormalizer = PropertyNormalizerFactory.CreateNormalizer(solutionName);
 
-            //    _roots.Add(document.Id, root);
-            //}
+            IEnumerable<IGrouping<string, ParameterSyntax>> groups = parameterNodes.GroupBy(x => propertyNameNormalizer.Normalize(x.Identifier.ValueText));
 
-            //return root;
+            foreach (IGrouping<string, ParameterSyntax> group in groups)
+            {
+                ParameterSyntax[] parameters = group.ToArray();
+                string propertyName = group.Key;
+
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    string ordinal = i == 0 ? "" : (i + 1).ToString();
+
+                    yield return parameters[i].WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.PropName.ToString(), $"{propertyName}{ordinal}"));
+                }
+            }
         }
+
 
         /// <summary>
         /// Create class declaration with properties
@@ -133,12 +139,12 @@ namespace ExtractMethodParametersLib
         /// <param name="parameterNodes"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        private async Task<ClassDeclarationSyntax> CreateClassDeclarationAsync(Solution solution, ImmutableHashSet<ParameterSyntax> parameterNodes
+        private async Task<ClassDeclarationSyntax> CreateClassDeclarationAsync(Solution solution, List<ParameterSyntax> parameterNodes
             , CancellationToken cancellationToken)
         {
             Document document = solution.GetDocument(_documentId);
 
-            SyntaxNode root = await GetRoot(document, cancellationToken);// await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
             Location methodIdentifierLocation = _methodIdentifier.GetLocation();
             MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
@@ -176,7 +182,7 @@ namespace ExtractMethodParametersLib
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                 .WithMembers(SyntaxFactory.List(properties))
                 .WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment))
-                .WithAdditionalAnnotations(new SyntaxAnnotation("enclosingType", enclosingClassSymbol.Name));
+                .WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.EnclosingType.ToString(), enclosingClassSymbol.Name));
         }
 
         /// <summary>
@@ -186,12 +192,14 @@ namespace ExtractMethodParametersLib
         /// <param name="defaultValues"></param>
         /// <param name="methodXmlComment"></param>
         /// <returns></returns>
-        private IEnumerable<MemberDeclarationSyntax> CreateProperties(ImmutableHashSet<ParameterSyntax> parameterNodes, Dictionary<string, ExpressionSyntax> defaultValues, string methodXmlComment)
+        private IEnumerable<MemberDeclarationSyntax> CreateProperties(List<ParameterSyntax> parameterNodes, Dictionary<string, ExpressionSyntax> defaultValues, string methodXmlComment)
         {
             foreach (ParameterSyntax par in parameterNodes)
             {
                 //declare the property
-                PropertyDeclarationSyntax propertyDeclaration = SyntaxFactory.PropertyDeclaration(par.Type, SyntaxFactory.Identifier(Up1stLetter(par.Identifier.ValueText)))
+                SyntaxToken identifier = SyntaxFactory.Identifier(par.GetAnnotations(AnnotationKind.PropName.ToString()).First().Data);
+
+                PropertyDeclarationSyntax propertyDeclaration = SyntaxFactory.PropertyDeclaration(par.Type, identifier)
                     .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                     .WithAccessorList(SyntaxFactory.AccessorList(
                         SyntaxFactory.List(new[]
@@ -201,7 +209,8 @@ namespace ExtractMethodParametersLib
                         SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
                             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                         }
-                        )));
+                        )))
+                    .WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.ParamName.ToString(), par.Identifier.ValueText));
 
                 #region xml comments for properties (steal them from the method xml comment)
 
@@ -247,46 +256,47 @@ namespace ExtractMethodParametersLib
         /// <param name="parameterNodes"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        private async Task<Dictionary<string, ExpressionSyntax>> GetDefaultValuesForPropertiesAsync(Solution solution, ImmutableHashSet<ParameterSyntax> parameterNodes
+        private async Task<Dictionary<string, ExpressionSyntax>> GetDefaultValuesForPropertiesAsync(Solution solution, List<ParameterSyntax> parameterNodes
             , CancellationToken cancellationToken)
         {
             //get the method symbol to find references for this method     
             Document document = solution.GetDocument(_documentId);
 
-            SyntaxNode root = await GetRoot(document, cancellationToken); //await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-            Location methodIdentifierLocation = _methodIdentifier.GetLocation();
-            MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
+            Location srcMethodIdentifierLocation = _methodIdentifier.GetLocation();
+            MethodDeclarationSyntax srcMethodSyntax = root.FindNode(srcMethodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
 
             // Get the semantic model for the syntax node
-            SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+            SemanticModel srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
             // Get the method symbol from the syntax node
-            IMethodSymbol methodSymbol = semanticModel.GetDeclaredSymbol(methodSyntax);
+            IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(srcMethodSyntax);
 
-            _allReferences = await SymbolFinder.FindReferencesAsync(methodSymbol, solution, cancellationToken).ConfigureAwait(false);
+            _allReferences = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, solution, cancellationToken).ConfigureAwait(false);
 
             Dictionary<string, Dictionary<ExpressionSyntax, int>> paramsData = new Dictionary<string, Dictionary<ExpressionSyntax, int>>(parameterNodes.Count);
 
-            MyExpressionSyntaxComparer comparer = new MyExpressionSyntaxComparer();
+            Dictionary<ExpressionSyntax, bool> usableAsDefaultExpressions = new Dictionary<ExpressionSyntax, bool>(_myExpressionSyntaxComparer);
 
-            Dictionary<ExpressionSyntax, bool> usableAsDefaultExpressions = new Dictionary<ExpressionSyntax, bool>(comparer);
-
+            //go through all references
             foreach (ReferencedSymbol reference in _allReferences)
             {
                 IEnumerable<IGrouping<DocumentId, ReferenceLocation>> groupsByDoc = reference.Locations.GroupBy(x => x.Document.Id);
 
+                //group by document so that we do not load syntax tree for the same document repeatedly
                 foreach (IGrouping<DocumentId, ReferenceLocation> groupByDoc in groupsByDoc)
                 {
-                    semanticModel = null;
+                    srcSemanticModel = null;
 
                     if (groupByDoc.Key != document.Id)
                     {
                         document = solution.GetDocument(groupByDoc.Key);
 
-                        root = await GetRoot(document, cancellationToken);//await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                        root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
                     }
 
+                    //go through each refernce in scope of a single document
                     foreach (ReferenceLocation location in groupByDoc)
                     {
                         SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
@@ -298,10 +308,15 @@ namespace ExtractMethodParametersLib
                             continue;
                         }
 
+                        //go throught all arguments
                         for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
                         {
-                            IParameterSymbol parameter = methodSymbol.Parameters[i];
                             ArgumentSyntax argument = invocation.ArgumentList.Arguments[i];
+
+                            //get parameters either by index or name (if the method call has named paramters)
+                            IParameterSymbol parameter = argument.NameColon is null ?
+                                srcMethodSymbol.Parameters[i]
+                                : srcMethodSymbol.Parameters.First(p => p.Name == argument.NameColon.Name.Identifier.ValueText);
 
                             if (!parameterNodes.Any(x => x.Identifier.ValueText == parameter.Name))
                             {
@@ -317,47 +332,44 @@ namespace ExtractMethodParametersLib
                             {
                                 canBeUsedAsDefaultInitializer = true;
                             }
-                            else //if (argument.Expression is MemberAccessExpressionSyntax || argument.Expression is CastExpressionSyntax)
+                            else if (!usableAsDefaultExpressions.TryGetValue(argument.Expression, out canBeUsedAsDefaultInitializer)) //check cached expressions first for performance
                             {
-                                if (!usableAsDefaultExpressions.TryGetValue(argument.Expression, out canBeUsedAsDefaultInitializer)) //check cached expressions first for performance
+                                if (srcSemanticModel is null)
                                 {
-                                    if (semanticModel is null)
+                                    srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                                }
+
+                                //check if the argument has constant value (enums, string, number...)
+                                if (!canBeUsedAsDefaultInitializer)
+                                {
+                                    Optional<object> constantValue = srcSemanticModel.GetConstantValue(argument.Expression, cancellationToken);
+
+                                    canBeUsedAsDefaultInitializer = constantValue.HasValue;
+                                }
+
+                                //check if static                                
+                                if (!canBeUsedAsDefaultInitializer)
+                                {
+                                    ISymbol symbol = srcSemanticModel.GetSymbolInfo(argument.Expression, cancellationToken).Symbol
+                                        ?? srcSemanticModel.GetSymbolInfo(argument, cancellationToken).Symbol; //?
+
+                                    if (symbol?.IsStatic ?? false)
                                     {
-                                        semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                                    }
-
-                                    //check if the argument has constant value (enums, string, number...)
-                                    if (!canBeUsedAsDefaultInitializer)
-                                    {
-                                        Optional<object> constantValue = semanticModel.GetConstantValue(argument.Expression, cancellationToken);
-
-                                        canBeUsedAsDefaultInitializer = constantValue.HasValue;
-                                    }
-
-                                    //check if for static                                
-                                    if (!canBeUsedAsDefaultInitializer)
-                                    {
-                                        ISymbol symbol = semanticModel.GetSymbolInfo(argument.Expression, cancellationToken).Symbol
-                                            ?? semanticModel.GetSymbolInfo(argument, cancellationToken).Symbol; //?
-
-                                        if (symbol?.IsStatic ?? false)
+                                        switch (symbol)
                                         {
-                                            switch (symbol)
-                                            {
-                                                case IMethodSymbol staticMethodSymbol:
-                                                    canBeUsedAsDefaultInitializer = staticMethodSymbol.Parameters.Length == 0;
-                                                    //actually the method params could be also static fields or props but we dont need to go that deep... this is good enough
-                                                    break;
-                                                case IFieldSymbol staticFieldSymbol:
-                                                case IPropertySymbol staticPropertySymbol:
-                                                    //there is potential problem when the field or prop is not fully qualified in the method argument, but we would need the full qualification in the new class prop initializer
-                                                    //but it is easily manually fixable aftewards so we shall not worry
-                                                    canBeUsedAsDefaultInitializer = true;
-                                                    break;
-                                                default:
-                                                    canBeUsedAsDefaultInitializer = true; //?
-                                                    break;
-                                            }
+                                            case IMethodSymbol staticMethodSymbol:
+                                                canBeUsedAsDefaultInitializer = staticMethodSymbol.Parameters.Length == 0;
+                                                //actually the method params could be also static fields or props but we dont need to go that deep... this is good enough
+                                                break;
+                                            case IFieldSymbol staticFieldSymbol:
+                                            case IPropertySymbol staticPropertySymbol:
+                                                //there is potential problem when the field or prop is not fully qualified in the method argument, but we would need the full qualification in the new class prop initializer
+                                                //but it is easily manually fixable aftewards so we shall not worry
+                                                canBeUsedAsDefaultInitializer = true;
+                                                break;
+                                            default:
+                                                canBeUsedAsDefaultInitializer = false; //?
+                                                break;
                                         }
                                     }
 
@@ -374,7 +386,7 @@ namespace ExtractMethodParametersLib
 
                             if (!paramsData.TryGetValue(parameter.Name, out Dictionary<ExpressionSyntax, int> values))
                             {
-                                values = new Dictionary<ExpressionSyntax, int>(comparer);
+                                values = new Dictionary<ExpressionSyntax, int>(_myExpressionSyntaxComparer);
                                 paramsData.Add(parameter.Name, values);
                             }
 
@@ -423,24 +435,25 @@ namespace ExtractMethodParametersLib
             //get the method symbol to find references for this method     
             Document document = solution.GetDocument(_documentId);
 
-            SyntaxNode root = await GetRoot(document, cancellationToken); //await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-            Location methodIdentifierLocation = _methodIdentifier.GetLocation();
-            MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
+            Location srcMethodIdentifierLocation = _methodIdentifier.GetLocation();
+            MethodDeclarationSyntax srcMethodSyntax = root.FindNode(srcMethodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
 
             // Get the semantic model for the syntax node
-            SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+            SemanticModel srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
             // Get the method symbol from the syntax node
-            IMethodSymbol methodSymbol = semanticModel.GetDeclaredSymbol(methodSyntax);
+            IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(srcMethodSyntax);
 
-            Dictionary<string, PropertyDeclarationSyntax> classProps = classDeclaration.Members.OfType<PropertyDeclarationSyntax>().ToDictionary(prop => prop.Identifier.ValueText, prop => prop);
+            Dictionary<string, PropertyDeclarationSyntax> classProps = classDeclaration.Members.OfType<PropertyDeclarationSyntax>()
+                .ToDictionary(prop => prop.GetAnnotations(AnnotationKind.ParamName.ToString()).First().Data, prop => prop);
 
             IEnumerable<ReferencedSymbol> references;
             if (_isPreview)
             {
                 ImmutableHashSet<Document> documents = _isPreview ? new[] { document }.ToImmutableHashSet() : null;
-                references = await SymbolFinder.FindReferencesAsync(methodSymbol, solution, documents, cancellationToken).ConfigureAwait(false);
+                references = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, solution, documents, cancellationToken).ConfigureAwait(false);
             }
             else if (_allReferences != null)
             {
@@ -448,7 +461,7 @@ namespace ExtractMethodParametersLib
             }
             else
             {
-                throw new System.Exception(nameof(_allReferences) + " not initialized");
+                throw new System.Exception($"{nameof(_allReferences)} not initialized");
             }
 
             foreach (ReferencedSymbol reference in references)
@@ -461,7 +474,7 @@ namespace ExtractMethodParametersLib
                     {
                         document = solution.GetDocument(groupByDoc.Key);
 
-                        root = await GetRoot(document, cancellationToken); //await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                        root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
                     }
 
                     SyntaxEditor editor = new SyntaxEditor(root, solution.Workspace.Services);
@@ -488,20 +501,21 @@ namespace ExtractMethodParametersLib
                         List<ArgumentSyntax> newArgsForMethodInvocation = new List<ArgumentSyntax>();
                         for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
                         {
-                            IParameterSymbol parameter = methodSymbol.Parameters[i];
                             ArgumentSyntax argument = invocation.ArgumentList.Arguments[i];
 
-                            if (!classProps.TryGetValue(Up1stLetter(parameter.Name), out PropertyDeclarationSyntax prop))
+                            //get parameters either by index or name (if the method call has named paramters)
+                            IParameterSymbol parameter = argument.NameColon is null ?
+                                srcMethodSymbol.Parameters[i]
+                                : srcMethodSymbol.Parameters.First(p => p.Name == argument.NameColon.Name.Identifier.ValueText);
+
+                            if (!classProps.TryGetValue(parameter.Name, out PropertyDeclarationSyntax prop))
                             {
                                 newArgsForMethodInvocation.Add(argument); //keep the method param as is, we do not have it in our new class
                                 continue;
                             }
 
-                            bool sameValueAsDefaultValue = prop.Initializer is null && argument.Expression.IsKind(SyntaxKind.NullLiteralExpression)
-                                || SyntaxFactory.AreEquivalent(prop.Initializer?.Value, argument.Expression);
-
                             //do not initialize property if the property has the same default value as the current method parameter
-                            if (sameValueAsDefaultValue)
+                            if (_myExpressionSyntaxComparer.EqualsForInit(prop.Initializer?.Value, argument.Expression))
                             {
                                 continue; // skip this property assignment
                             }
@@ -535,7 +549,8 @@ namespace ExtractMethodParametersLib
                         string uniqueVariableName;
                         do
                         {
-                            uniqueVariableName = $"args{(variableCount == 0 ? "" : variableCount.ToString())}";
+                            string ordinal = variableCount == 0 ? "" : variableCount.ToString();
+                            uniqueVariableName = $"args{ordinal}";
                             variableCount++;
 
                         } while (variables.Any(x => x.Identifier.ValueText == uniqueVariableName));
@@ -550,7 +565,7 @@ namespace ExtractMethodParametersLib
                         ));
 
                         // Create a variable to hold the arguments class instance
-                        string myClassType = $"{classDeclaration.GetAnnotations("enclosingType").First().Data}.{classDeclaration.Identifier.Text}";
+                        string myClassType = $"{classDeclaration.GetAnnotations(AnnotationKind.EnclosingType.ToString()).First().Data}.{classDeclaration.Identifier.Text}";
 
                         //declaration of the variable
                         LocalDeclarationStatementSyntax argsVarDeclStatement = SyntaxFactory.LocalDeclarationStatement(
@@ -590,7 +605,7 @@ namespace ExtractMethodParametersLib
         /// <param name="classDeclaration"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        private async Task<Solution> ModifyMethodDefinitionAsync(Solution solution, ImmutableHashSet<ParameterSyntax> parameterNodes, ClassDeclarationSyntax classDeclaration
+        private async Task<Solution> ModifyMethodDefinitionAsync(Solution solution, List<ParameterSyntax> parameterNodes, ClassDeclarationSyntax classDeclaration
             , CancellationToken cancellationToken)
         {
             Document document = solution.GetDocument(_documentId);
@@ -680,8 +695,8 @@ namespace ExtractMethodParametersLib
 
             BlockSyntax newBody = newMethodSyntax.Body.ReplaceNodes(nodesToReplace,
                 (node, _) => SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression
-                , SyntaxFactory.IdentifierName(parameterName)
-                , SyntaxFactory.IdentifierName(Up1stLetter(node.Identifier.ValueText)))
+                            , SyntaxFactory.IdentifierName(parameterName)
+                            , SyntaxFactory.IdentifierName(parameterNodes.First(x => x.Identifier.ValueText == node.Identifier.ValueText).GetAnnotations(AnnotationKind.PropName.ToString()).First().Data))
                     .WithOperatorToken(SyntaxFactory.Token(SyntaxKind.DotToken))
                     .WithLeadingTrivia(node.GetLeadingTrivia())
                     .WithTrailingTrivia(node.GetTrailingTrivia())
@@ -699,19 +714,9 @@ namespace ExtractMethodParametersLib
 
             SyntaxNode newRoot = editor.GetChangedRoot();
 
-            //newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken);
+            //newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken); //this produces huge preview
 
             return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-        }
-
-        /// <summary>
-        /// Capitalize first letter of the string
-        /// </summary>
-        /// <param name="text"></param>
-        /// <returns></returns>
-        private static string Up1stLetter(string text)
-        {
-            return text.Substring(0, 1).ToUpper() + text.Substring(1);
         }
     }
 }
