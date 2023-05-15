@@ -26,7 +26,7 @@ namespace ExtractMethodParametersLib
         private bool _isPreview;
         private DocumentId _documentId;
         private SyntaxToken _methodIdentifier;
-        private IEnumerable<ReferencedSymbol> _allReferences;      
+        private IEnumerable<ReferencedSymbol> _allReferences;
         private MyExpressionSyntaxComparer _myExpressionSyntaxComparer;
 
         public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
@@ -48,11 +48,19 @@ namespace ExtractMethodParametersLib
                 .OfType<MethodDeclarationSyntax>()
                 .FirstOrDefault();
 
-            // Find the parameter nodes that intersect with the selected text
-            List<ParameterSyntax> parameterNodes = methodDeclaration.ParameterList.Parameters
-                .Where(p => p.Span.IntersectsWith(context.Span))
-                .Where(p => !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword))) //skip out and params parameters
-                .ToList();
+            var parameterNodes = (from p in methodDeclaration.ParameterList.Parameters
+                              
+                                  let hasGenericParam = (p.Type as GenericNameSyntax)?.TypeArgumentList?.Arguments //skip generics such as List<T> etc
+                                                        .OfType<IdentifierNameSyntax>()
+                                                        .Any(typeArg => methodDeclaration.TypeParameterList?.Parameters
+                                                            .Any(typeParam => typeParam.Identifier.ValueText == typeArg.Identifier.ValueText) == true) == true
+
+                                  where p.Span.IntersectsWith(context.Span) //get selected text
+                                  where !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword)) //skip outr and params
+                                  where !hasGenericParam
+
+                                  select p)
+                                  .ToList();
 
             //exit when user selected less than 2 params
             if (parameterNodes.Count < 2)
@@ -81,7 +89,7 @@ namespace ExtractMethodParametersLib
 
             _isPreview = isPreview;
             _documentId = document.Id;
-            _methodIdentifier = methodIdentifier;      
+            _methodIdentifier = methodIdentifier;
             _myExpressionSyntaxComparer = new MyExpressionSyntaxComparer();
 
             Solution newSolution = document.Project.Solution;
@@ -323,7 +331,7 @@ namespace ExtractMethodParametersLib
                                 continue;
                             }
 
-                            //determine if the argument value can be used as default property initiializer, ie. it is some literal, or static member accessor
+                            //determine if the argument value can be used as default property initializer, ie. it is some literal, or static member accessor
                             bool canBeUsedAsDefaultInitializer = false;
 
                             #region can this argument be used as default property initializer?
@@ -345,6 +353,15 @@ namespace ExtractMethodParametersLib
                                     Optional<object> constantValue = srcSemanticModel.GetConstantValue(argument.Expression, cancellationToken);
 
                                     canBeUsedAsDefaultInitializer = constantValue.HasValue;
+                                }
+
+                                //this is brave
+                                //check if it is simple object creation without constructor paraemters or initializer, this is so that we can initialize new List<int>()
+                                if (!canBeUsedAsDefaultInitializer
+                                    && argument.Expression is ObjectCreationExpressionSyntax oces)
+                                {
+                                    canBeUsedAsDefaultInitializer = oces.ArgumentList?.Arguments.Count == 0
+                                                                        && oces.Initializer is null;
                                 }
 
                                 //check if static                                
