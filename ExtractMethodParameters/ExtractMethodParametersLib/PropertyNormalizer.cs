@@ -2,6 +2,9 @@
 
 namespace ExtractMethodParametersLib
 {
+    /// <summary>
+    /// Normalize method parameter name to be usable as property name
+    /// </summary>
     internal interface IPropertyNameNormalizer
     {
         string Normalize(string value);
@@ -35,16 +38,16 @@ namespace ExtractMethodParametersLib
 
         public string Normalize(string value, int offset)
         {
-            return value.Substring(0 + offset, 1).ToUpper() + value.Substring(1 + offset);  
+            return value.Substring(0 + offset, 1).ToUpper() + value.Substring(1 + offset);
         }
     }
 
     /// <summary>
-    /// Removes leading type hint letter and caps first letter
+    /// Removes leading type hint letter and caps first letter nInteger -> Integer or integer -> Integer
     /// </summary>
     internal class SangPropertyNameNormalizer : IPropertyNameNormalizer
     {
-        private GenericPropertyNameNormalizer genericPropertyNameNormalizer = new GenericPropertyNameNormalizer ();
+        private GenericPropertyNameNormalizer genericPropertyNameNormalizer = new GenericPropertyNameNormalizer();
         private const string pattern = @"^[a-z][A-Z].{2,}$";
 
         public string Normalize(string value)

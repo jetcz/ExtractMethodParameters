@@ -5,7 +5,7 @@ using System.Collections.Generic;
 
 namespace ExtractMethodParametersLib
 {
-    public class MyExpressionSyntaxComparer : IEqualityComparer<ExpressionSyntax>
+    public class ExpressionSyntaxComparer : IEqualityComparer<ExpressionSyntax>
     {
         public bool Equals(ExpressionSyntax x, ExpressionSyntax y)
         {

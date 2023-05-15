@@ -27,7 +27,7 @@ namespace ExtractMethodParametersLib
         private DocumentId _documentId;
         private SyntaxToken _methodIdentifier;
         private IEnumerable<ReferencedSymbol> _allReferences;
-        private MyExpressionSyntaxComparer _myExpressionSyntaxComparer;
+        private ExpressionSyntaxComparer _expressionSyntaxComparer;
 
         public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
         {
@@ -48,6 +48,9 @@ namespace ExtractMethodParametersLib
                 .OfType<MethodDeclarationSyntax>()
                 .FirstOrDefault();
 
+            if (methodDeclaration is null)
+                return;
+
             var parameterNodes = (from p in methodDeclaration.ParameterList.Parameters
                               
                                   let hasGenericParam = (p.Type as GenericNameSyntax)?.TypeArgumentList?.Arguments //skip generics such as List<T> etc
@@ -55,8 +58,8 @@ namespace ExtractMethodParametersLib
                                                         .Any(typeArg => methodDeclaration.TypeParameterList?.Parameters
                                                             .Any(typeParam => typeParam.Identifier.ValueText == typeArg.Identifier.ValueText) == true) == true
 
-                                  where p.Span.IntersectsWith(context.Span) //get selected text
-                                  where !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword)) //skip outr and params
+                                  where p.Span.IntersectsWith(context.Span) //get just selected text
+                                  where !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword)) //skip out and params
                                   where !hasGenericParam
 
                                   select p)
@@ -66,8 +69,8 @@ namespace ExtractMethodParametersLib
             if (parameterNodes.Count < 2)
                 return;
 
-            CustomCodeAction action = CustomCodeAction.Create("Extract method parameters", (c, isPreview) =>
-                Process(isPreview, context.Document, methodDeclaration.Identifier, parameterNodes, c)
+            CustomCodeAction action = CustomCodeAction.Create("Extract method parameters", (cancellationToken, isPreview) =>
+                Process(isPreview, context.Document, methodDeclaration.Identifier, parameterNodes, cancellationToken)
             );
 
             context.RegisterRefactoring(action);
@@ -90,7 +93,7 @@ namespace ExtractMethodParametersLib
             _isPreview = isPreview;
             _documentId = document.Id;
             _methodIdentifier = methodIdentifier;
-            _myExpressionSyntaxComparer = new MyExpressionSyntaxComparer();
+            _expressionSyntaxComparer = new ExpressionSyntaxComparer();
 
             Solution newSolution = document.Project.Solution;
 
@@ -276,16 +279,16 @@ namespace ExtractMethodParametersLib
             MethodDeclarationSyntax srcMethodSyntax = root.FindNode(srcMethodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
 
             // Get the semantic model for the syntax node
-            SemanticModel srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+            SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
             // Get the method symbol from the syntax node
-            IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(srcMethodSyntax);
+            IMethodSymbol srcMethodSymbol = semanticModel.GetDeclaredSymbol(srcMethodSyntax);
 
             _allReferences = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, solution, cancellationToken).ConfigureAwait(false);
 
             Dictionary<string, Dictionary<ExpressionSyntax, int>> paramsData = new Dictionary<string, Dictionary<ExpressionSyntax, int>>(parameterNodes.Count);
 
-            Dictionary<ExpressionSyntax, bool> usableAsDefaultExpressions = new Dictionary<ExpressionSyntax, bool>(_myExpressionSyntaxComparer);
+            Dictionary<ExpressionSyntax, bool> usableAsDefaultExpressions = new Dictionary<ExpressionSyntax, bool>(_expressionSyntaxComparer);
 
             //go through all references
             foreach (ReferencedSymbol reference in _allReferences)
@@ -295,7 +298,7 @@ namespace ExtractMethodParametersLib
                 //group by document so that we do not load syntax tree for the same document repeatedly
                 foreach (IGrouping<DocumentId, ReferenceLocation> groupByDoc in groupsByDoc)
                 {
-                    srcSemanticModel = null;
+                    semanticModel = null;
 
                     if (groupByDoc.Key != document.Id)
                     {
@@ -340,35 +343,34 @@ namespace ExtractMethodParametersLib
                             {
                                 canBeUsedAsDefaultInitializer = true;
                             }
-                            else if (!usableAsDefaultExpressions.TryGetValue(argument.Expression, out canBeUsedAsDefaultInitializer)) //check cached expressions first for performance
+                            else if (argument.Expression is ObjectCreationExpressionSyntax objectCreation)
                             {
-                                if (srcSemanticModel is null)
+                                //this is brave
+                                //check if it is simple object creation without constructor parameters or initializer, this is so that we can initialize new List<int>() for example
+                                canBeUsedAsDefaultInitializer = (objectCreation.ArgumentList is null || objectCreation.ArgumentList?.Arguments.Count == 0)
+                                                                        && objectCreation.Initializer is null;
+                            }
+                            else if (!usableAsDefaultExpressions.TryGetValue(argument.Expression, out canBeUsedAsDefaultInitializer)) //check cached expressions first for performance
+                            {                            
+                                //following checks require srcSemanticModel
+                                if (semanticModel is null)
                                 {
-                                    srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                                    semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
                                 }
 
                                 //check if the argument has constant value (enums, string, number...)
                                 if (!canBeUsedAsDefaultInitializer)
                                 {
-                                    Optional<object> constantValue = srcSemanticModel.GetConstantValue(argument.Expression, cancellationToken);
+                                    Optional<object> constantValue = semanticModel.GetConstantValue(argument.Expression, cancellationToken);
 
                                     canBeUsedAsDefaultInitializer = constantValue.HasValue;
-                                }
-
-                                //this is brave
-                                //check if it is simple object creation without constructor paraemters or initializer, this is so that we can initialize new List<int>()
-                                if (!canBeUsedAsDefaultInitializer
-                                    && argument.Expression is ObjectCreationExpressionSyntax oces)
-                                {
-                                    canBeUsedAsDefaultInitializer = oces.ArgumentList?.Arguments.Count == 0
-                                                                        && oces.Initializer is null;
                                 }
 
                                 //check if static                                
                                 if (!canBeUsedAsDefaultInitializer)
                                 {
-                                    ISymbol symbol = srcSemanticModel.GetSymbolInfo(argument.Expression, cancellationToken).Symbol
-                                        ?? srcSemanticModel.GetSymbolInfo(argument, cancellationToken).Symbol; //?
+                                    ISymbol symbol = semanticModel.GetSymbolInfo(argument.Expression, cancellationToken).Symbol
+                                        ?? semanticModel.GetSymbolInfo(argument, cancellationToken).Symbol; //?
 
                                     if (symbol?.IsStatic ?? false)
                                     {
@@ -401,9 +403,10 @@ namespace ExtractMethodParametersLib
                                 continue;
                             }
 
+                            //build knowledgebase about frequency of each parameter value
                             if (!paramsData.TryGetValue(parameter.Name, out Dictionary<ExpressionSyntax, int> values))
                             {
-                                values = new Dictionary<ExpressionSyntax, int>(_myExpressionSyntaxComparer);
+                                values = new Dictionary<ExpressionSyntax, int>(_expressionSyntaxComparer);
                                 paramsData.Add(parameter.Name, values);
                             }
 
@@ -532,7 +535,7 @@ namespace ExtractMethodParametersLib
                             }
 
                             //do not initialize property if the property has the same default value as the current method parameter
-                            if (_myExpressionSyntaxComparer.EqualsForInit(prop.Initializer?.Value, argument.Expression))
+                            if (_expressionSyntaxComparer.EqualsForInit(prop.Initializer?.Value, argument.Expression))
                             {
                                 continue; // skip this property assignment
                             }
