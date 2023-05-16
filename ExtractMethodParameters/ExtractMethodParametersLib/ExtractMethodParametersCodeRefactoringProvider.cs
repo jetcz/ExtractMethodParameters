@@ -29,6 +29,26 @@ namespace ExtractMethodParametersLib
         private IEnumerable<ReferencedSymbol> _allReferences;
         private ExpressionSyntaxComparer _expressionSyntaxComparer;
 
+        /*
+         _UseIndividualAssigmentStatements = true
+
+            var args = new Class1Declaration.MyMethodArgs();
+            args.MyId = (int)myEnum.option;
+            args.Name = nameof(Class1Declaration);
+         
+
+         _UseIndividualAssigmentStatements = false
+
+            var args = new Class1Declaration.MyMethodArgs()
+            {
+                MyId = (int)myEnum.option,
+                Name = nameof(Class1Declaration)
+            };
+         
+         */
+
+        private readonly bool _UseIndividualAssigmentStatements = true;
+
         public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
         {
             //exit when user selected less than 3 chars
@@ -51,18 +71,18 @@ namespace ExtractMethodParametersLib
             if (methodDeclaration is null)
                 return;
 
-            var parameterNodes = (from p in methodDeclaration.ParameterList.Parameters
-                              
-                                  let hasGenericParam = (p.Type as GenericNameSyntax)?.TypeArgumentList?.Arguments //skip generics such as List<T> etc
-                                                        .OfType<IdentifierNameSyntax>()
-                                                        .Any(typeArg => methodDeclaration.TypeParameterList?.Parameters
-                                                            .Any(typeParam => typeParam.Identifier.ValueText == typeArg.Identifier.ValueText) == true) == true
+            List<ParameterSyntax> parameterNodes = (from p in methodDeclaration.ParameterList.Parameters
 
-                                  where p.Span.IntersectsWith(context.Span) //get just selected text
-                                  where !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword)) //skip out and params
-                                  where !hasGenericParam
+                                                    let hasGenericParam = (p.Type as GenericNameSyntax)?.TypeArgumentList?.Arguments //skip generics such as List<T> etc
+                                                                          .OfType<IdentifierNameSyntax>()
+                                                                          .Any(typeArg => methodDeclaration.TypeParameterList?.Parameters
+                                                                              .Any(typeParam => typeParam.Identifier.ValueText == typeArg.Identifier.ValueText) == true) == true
 
-                                  select p)
+                                                    where p.Span.IntersectsWith(context.Span) //get just selected text
+                                                    where !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword)) //skip out and params
+                                                    where !hasGenericParam
+
+                                                    select p)
                                   .ToList();
 
             //exit when user selected less than 2 params
@@ -351,7 +371,7 @@ namespace ExtractMethodParametersLib
                                                                         && objectCreation.Initializer is null;
                             }
                             else if (!usableAsDefaultExpressions.TryGetValue(argument.Expression, out canBeUsedAsDefaultInitializer)) //check cached expressions first for performance
-                            {                            
+                            {
                                 //following checks require srcSemanticModel
                                 if (semanticModel is null)
                                 {
@@ -511,6 +531,29 @@ namespace ExtractMethodParametersLib
                             continue;
                         }
 
+                        //find a block syntax where we put out new variable, we insert int before the target which should be expression syntax                
+                        SyntaxNode target = invocation.Parent;
+                        while (!(target.Parent is BlockSyntax))
+                        {
+                            target = target.Parent;
+                        }
+                        BlockSyntax block = target.Parent as BlockSyntax;
+
+                        // scan the code block if there is the same variable already, create unique name
+                        IEnumerable<VariableDeclaratorSyntax> variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
+
+                        // create object name       
+                        string uniqueVariableName;
+                        do
+                        {
+                            string ordinal = variableCount == 0 ? "" : variableCount.ToString();
+                            uniqueVariableName = $"args{ordinal}";
+                            variableCount++;
+
+                        } while (variables.Any(x => x.Identifier.ValueText == uniqueVariableName));
+
+                        SyntaxToken argsVar = SyntaxFactory.Identifier(uniqueVariableName);
+
                         #region build class body initializer
 
                         // Build initializer expression for the new args object
@@ -540,11 +583,23 @@ namespace ExtractMethodParametersLib
                                 continue; // skip this property assignment
                             }
 
+                            ExpressionSyntax leftSide;
+                            if (_UseIndividualAssigmentStatements)
+                            {
+                                leftSide = SyntaxFactory.MemberAccessExpression(
+                                    SyntaxKind.SimpleMemberAccessExpression,
+                                    SyntaxFactory.IdentifierName(argsVar),
+                                    SyntaxFactory.IdentifierName(prop.Identifier));
+                            }
+                            else
+                            {
+                                leftSide = SyntaxFactory.IdentifierName(prop.Identifier);
+                            }
+
+                            ExpressionSyntax rightSide = argument.Expression;
+
                             // Create a syntax node for the property assignment
-                            AssignmentExpressionSyntax propertyAssignment = SyntaxFactory.AssignmentExpression(
-                                SyntaxKind.SimpleAssignmentExpression,
-                                SyntaxFactory.IdentifierName(prop.Identifier),
-                                argument.Expression)
+                            AssignmentExpressionSyntax propertyAssignment = SyntaxFactory.AssignmentExpression(SyntaxKind.SimpleAssignmentExpression, leftSide, rightSide)
                                 .WithLeadingTrivia(SyntaxFactory.LineFeed)
                                 .WithoutTrailingTrivia();
 
@@ -553,29 +608,6 @@ namespace ExtractMethodParametersLib
                         }
 
                         #endregion
-
-                        //find a block syntax where we put out new variable, we insert int before the target which should be expression syntax                
-                        SyntaxNode target = invocation.Parent;
-                        while (!(target.Parent is BlockSyntax))
-                        {
-                            target = target.Parent;
-                        }
-                        BlockSyntax block = target.Parent as BlockSyntax;
-
-                        // scan the code block if there is the same variable already, create unique name
-                        IEnumerable<VariableDeclaratorSyntax> variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
-
-                        // create class name       
-                        string uniqueVariableName;
-                        do
-                        {
-                            string ordinal = variableCount == 0 ? "" : variableCount.ToString();
-                            uniqueVariableName = $"args{ordinal}";
-                            variableCount++;
-
-                        } while (variables.Any(x => x.Identifier.ValueText == uniqueVariableName));
-
-                        SyntaxToken argsVar = SyntaxFactory.Identifier(uniqueVariableName);
 
                         newArgsForMethodInvocation.Insert(0, SyntaxFactory.Argument(SyntaxFactory.IdentifierName(argsVar)));
 
@@ -587,19 +619,31 @@ namespace ExtractMethodParametersLib
                         // Create a variable to hold the arguments class instance
                         string myClassType = $"{classDeclaration.GetAnnotations(AnnotationKind.EnclosingType.ToString()).First().Data}.{classDeclaration.Identifier.Text}";
 
+                        var objectCreationExpression = SyntaxFactory.ObjectCreationExpression(
+                                    SyntaxFactory.ParseTypeName(myClassType))                               
+                                    .WithNewKeyword(SyntaxFactory.Token(SyntaxKind.NewKeyword)
+                                    .WithTrailingTrivia(SyntaxFactory.Space))
+                                    .WithArgumentList(SyntaxFactory.ArgumentList());
+
+                        if (!_UseIndividualAssigmentStatements)
+                        {
+                            objectCreationExpression = objectCreationExpression.WithInitializer(initializerExpression);
+                        }
+
                         //declaration of the variable
                         LocalDeclarationStatementSyntax argsVarDeclStatement = SyntaxFactory.LocalDeclarationStatement(
                             SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName("var"))
                             .WithVariables(SyntaxFactory.SingletonSeparatedList(
                                 SyntaxFactory.VariableDeclarator(argsVar)
-                                .WithInitializer(SyntaxFactory.EqualsValueClause(SyntaxFactory.ObjectCreationExpression(
-                                    SyntaxFactory.ParseTypeName(myClassType))
-                                .WithInitializer(initializerExpression)
-                                    .WithNewKeyword(SyntaxFactory.Token(SyntaxKind.NewKeyword)
-                                    .WithTrailingTrivia(SyntaxFactory.Space))
-                                    .WithArgumentList(SyntaxFactory.ArgumentList()))))));
+                                .WithInitializer(SyntaxFactory.EqualsValueClause(objectCreationExpression))))
+                            );
 
                         editor.InsertBefore(target, argsVarDeclStatement);
+
+                        if (_UseIndividualAssigmentStatements)
+                        {
+                            editor.InsertBefore(target, initializerExpression.Expressions.Select(x => SyntaxFactory.ExpressionStatement(x)));           
+                        }
 
                         editor.ReplaceNode(invocation, newInvocation.NormalizeWhitespace());
                     }
@@ -608,9 +652,7 @@ namespace ExtractMethodParametersLib
 
                     newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken);
 
-                    solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-
-                    //_roots.Remove(document.Id);
+                    solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);             
                 }
             }
 
