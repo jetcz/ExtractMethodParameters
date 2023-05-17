@@ -4,22 +4,22 @@
 
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
-    <RootNamespace>ExtractMethodParametersDebug</RootNamespace>
-    <AssemblyName>ExtractMethodParametersDebug</AssemblyName>
   </PropertyGroup>
 
-  <PropertyGroup>
+  <PropertyGroup>	  
     <GeneratePkgDefFile>false</GeneratePkgDefFile>
     <IncludeAssemblyInVSIXContainer>false</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <IncludeDebugSymbolsInLocalVSIXDeployment>false</IncludeDebugSymbolsInLocalVSIXDeployment>
     <CopyBuildOutputToOutputDirectory>false</CopyBuildOutputToOutputDirectory>
-    <CopyOutputSymbolsToOutputDirectory>false</CopyOutputSymbolsToOutputDirectory>
+    <CopyOutputSymbolsToOutputDirectory>false</CopyOutputSymbolsToOutputDirectory>	
     <VSSDKTargetPlatformRegRootSuffix>Roslyn</VSSDKTargetPlatformRegRootSuffix>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\ExtractMethodParameters\source.extension.vsixmanifest" Link="source.extension.vsixmanifest" />
+    <None Include="..\ExtractMethodParameters\source.extension.vsixmanifest" Link="source.extension.vsixmanifest">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
@@ -37,7 +37,7 @@
   <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" Condition="Exists('$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets')" />
 
   <ItemGroup>
-    <ProjectReference Include="..\..\ExtractMethodParameters\ExtractMethodParametersLib\ExtractMethodParametersLib.csproj" />
+    <ProjectReference Include="..\ExtractMethodParametersLib\ExtractMethodParametersLib.csproj" />
   </ItemGroup>
 
   <ItemGroup>
