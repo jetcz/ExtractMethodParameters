@@ -756,17 +756,37 @@ namespace ExtractMethodParametersLib
                 .OfType<IdentifierNameSyntax>()
                 .Where(x => parameterNodes.Any(p => p.Identifier.ValueText == x.Identifier.ValueText));
 
-            BlockSyntax newBody = newMethodSyntax.Body.ReplaceNodes(nodesToReplace,
-                (node, _) => SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression
-                            , SyntaxFactory.IdentifierName(parameterName)
-                            , SyntaxFactory.IdentifierName(parameterNodes.First(x => x.Identifier.ValueText == node.Identifier.ValueText).GetAnnotations(AnnotationKind.PropName.ToString()).First().Data))
-                    .WithOperatorToken(SyntaxFactory.Token(SyntaxKind.DotToken))
-                    .WithLeadingTrivia(node.GetLeadingTrivia())
-                    .WithTrailingTrivia(node.GetTrailingTrivia())
-                    );
 
-            // Create the new method syntax with the updated body
-            newMethodSyntax = newMethodSyntax.WithBody(newBody);
+            T ReplaceParameterReferences<T>(T body) where T : SyntaxNode
+            {
+                return body.ReplaceNodes(nodesToReplace,
+                    (node, _) => SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression
+                                , SyntaxFactory.IdentifierName(parameterName)
+                                , SyntaxFactory.IdentifierName(parameterNodes.First(x => x.Identifier.ValueText == node.Identifier.ValueText).GetAnnotations(AnnotationKind.PropName.ToString()).First().Data))
+                        .WithOperatorToken(SyntaxFactory.Token(SyntaxKind.DotToken))
+                        .WithLeadingTrivia(node.GetLeadingTrivia())
+                        .WithTrailingTrivia(node.GetTrailingTrivia())
+                        );
+            }
+
+            //method has body { ... }
+            if (newMethodSyntax.Body != null)
+            {
+                BlockSyntax newBody = ReplaceParameterReferences(newMethodSyntax.Body);
+
+                // Create the new method syntax with the updated body
+                newMethodSyntax = newMethodSyntax.WithBody(newBody);
+            }
+            else 
+            {
+                //method is expressions syntax => ...
+                ArrowExpressionClauseSyntax lambda = newMethodSyntax.DescendantNodes().OfType<ArrowExpressionClauseSyntax>().FirstOrDefault();
+                if (lambda != null)
+                {
+                    ArrowExpressionClauseSyntax newLambda = ReplaceParameterReferences(lambda);
+                    newMethodSyntax = newMethodSyntax.WithExpressionBody(newLambda);
+                }
+            }
 
             #endregion
 
