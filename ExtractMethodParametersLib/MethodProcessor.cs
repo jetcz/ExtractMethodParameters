@@ -19,7 +19,7 @@ namespace ExtractMethodParametersLib
     internal class MethodProcessor
     {
         private readonly bool _isPreview;
-        private readonly DocumentId _documentId;        
+        private readonly DocumentId _documentId;
         private readonly MethodDeclarationSyntax _methodSyntax;
 
         private Solution _solution;
@@ -36,14 +36,14 @@ namespace ExtractMethodParametersLib
         /// <param name="document"></param>
         /// <param name="methodSyntax"></param>
         /// <param name="parameters">selected parameters</param>
-        /// <exception cref="System.ArgumentNullException"></exception>
+        /// <exception cref="ArgumentNullException"></exception>
         public MethodProcessor(bool isPreview, Document document, MethodDeclarationSyntax methodSyntax, List<ParameterSyntax> parameters)
         {
             _isPreview = isPreview;
-            _documentId = document.Id ?? throw new System.ArgumentNullException(nameof(document));
-            _solution = document.Project.Solution ?? throw new System.ArgumentNullException(nameof(document));
-            _methodSyntax = methodSyntax ?? throw new System.ArgumentNullException(nameof(methodSyntax));
-            _parameters = parameters ?? throw new System.ArgumentNullException(nameof(parameters));
+            _documentId = document.Id ?? throw new ArgumentNullException(nameof(document));
+            _solution = document.Project.Solution ?? throw new ArgumentNullException(nameof(document));
+            _methodSyntax = methodSyntax ?? throw new ArgumentNullException(nameof(methodSyntax));
+            _parameters = parameters ?? throw new ArgumentNullException(nameof(parameters));
         }
 
         /*
@@ -132,7 +132,7 @@ namespace ExtractMethodParametersLib
         {
             Document document = _solution.GetDocument(_documentId);
 
-            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);          
+            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
             MethodDeclarationSyntax methodSyntax = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
                 .First(x => SyntaxFactory.AreEquivalent(x, _methodSyntax));
@@ -188,7 +188,7 @@ namespace ExtractMethodParametersLib
                 //declare the property
                 SyntaxToken identifier = SyntaxFactory.Identifier(par.GetAnnotations(AnnotationKind.PropName.ToString()).First().Data);
 
-                PropertyDeclarationSyntax propertyDeclaration = SyntaxFactory.PropertyDeclaration(par.Type, identifier)
+                PropertyDeclarationSyntax propertyDeclaration = SyntaxFactory.PropertyDeclaration(par.Type.WithoutTrivia(), identifier)
                     .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                     .WithAccessorList(SyntaxFactory.AccessorList(
                         SyntaxFactory.List(new[]
@@ -282,7 +282,7 @@ namespace ExtractMethodParametersLib
                         root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
                     }
 
-                    //go through each refernce in scope of a single document
+                    //go through each reference in scope of a single document
                     foreach (ReferenceLocation location in groupByDoc)
                     {
                         SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
@@ -290,6 +290,24 @@ namespace ExtractMethodParametersLib
 
                         //invocation might be null if the method is referenced e.g. in xml comment as <see cref...
                         if (invocation is null)
+                        {
+                            continue;
+                        }
+
+                        //do not consider unit tests as source for default values
+                        var isTestMethod = syntaxNode.Ancestors()
+                            .OfType<MethodDeclarationSyntax>()
+                            .SelectMany(x => x.AttributeLists)
+                            .SelectMany(x => x.Attributes)
+                            .Any(x => x.Name.ToString() == "TestMethod");
+
+                        var isTestClass = syntaxNode.Ancestors()
+                            .OfType<ClassDeclarationSyntax>()
+                            .SelectMany(x => x.AttributeLists)
+                            .SelectMany(x => x.Attributes)
+                            .Any(x => x.Name.ToString() == "TestClass");
+
+                        if (isTestMethod || isTestClass)
                         {
                             continue;
                         }
@@ -405,7 +423,7 @@ namespace ExtractMethodParametersLib
             {
                 Dictionary<ExpressionSyntax, int> expressionOccurences = paramData.Value;
 
-                ExpressionSyntax expression = expressionOccurences.OrderByDescending(x => x.Value).FirstOrDefault().Key;
+                ExpressionSyntax expression = expressionOccurences.OrderByDescending(x => x.Value).FirstOrDefault(x => x.Value > 1).Key; //take the value which is there at least twice
 
                 if (expression != null && !expression.IsKind(SyntaxKind.NullLiteralExpression))
                 {
@@ -422,7 +440,7 @@ namespace ExtractMethodParametersLib
         /// <param name="classDeclaration"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        /// <exception cref="System.Exception"></exception>
+        /// <exception cref="Exception"></exception>
         private async Task<Solution> ModifyMethodReferencesAsync(ClassDeclarationSyntax classDeclaration, CancellationToken cancellationToken)
         {
             //get the method symbol to find references for this method     
@@ -454,7 +472,7 @@ namespace ExtractMethodParametersLib
             }
             else
             {
-                throw new System.Exception($"{nameof(_allReferences)} not initialized");
+                throw new Exception($"{nameof(_allReferences)} not initialized");
             }
 
             references = references.OrderBy(x => x.Locations.Count());
@@ -640,7 +658,7 @@ namespace ExtractMethodParametersLib
 
                     if (!_isPreview) //do not format the current document in preview mode to keep the preview small
                     {
-                        newRoot = Formatter.Format(newRoot, _solution.Workspace, null, cancellationToken); 
+                        newRoot = Formatter.Format(newRoot, _solution.Workspace, null, cancellationToken);
                     }
 
                     _solution = _solution.WithDocumentSyntaxRoot(document.Id, newRoot);
@@ -681,7 +699,7 @@ namespace ExtractMethodParametersLib
             {
                 i++;
                 parameterName = $"args{i}";
-            }           
+            }
 
             // Get the type of the class
             //IdentifierNameSyntax className = SyntaxFactory.IdentifierName(classDeclaration.Identifier);
@@ -735,7 +753,7 @@ namespace ExtractMethodParametersLib
                     //add the trivia               
                     newMethodSyntax = newMethodSyntax.WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(myString));
                 }
-            }            
+            }
 
             #endregion
 
