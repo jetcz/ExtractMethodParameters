@@ -78,9 +78,9 @@ namespace ExtractMethodParametersLib
                                                                           .Any(typeArg => methodDeclaration.TypeParameterList?.Parameters
                                                                               .Any(typeParam => typeParam.Identifier.ValueText == typeArg.Identifier.ValueText) == true) == true
 
-                                                    where p.Span.IntersectsWith(context.Span) //get just selected text
+                                                    where !hasGenericParam                                                    
                                                     where !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword)) //skip out and params
-                                                    where !hasGenericParam
+                                                    where p.Span.IntersectsWith(context.Span) //get just selected text                                                                                                   //
 
                                                     select p)
                                   .ToList();
@@ -128,6 +128,7 @@ namespace ExtractMethodParametersLib
             //is this needed?
             _allReferences = null;
 
+            sw.Stop();
             Debug.WriteLine($"{nameof(ExtractMethodParametersCodeRefactoringProvider)} isPreview={_isPreview} elapsed={sw.Elapsed}");
 
             return newSolution;
@@ -177,8 +178,8 @@ namespace ExtractMethodParametersLib
 
             SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-            Location methodIdentifierLocation = _methodIdentifier.GetLocation();
-            MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
+            MethodDeclarationSyntax methodSyntax = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                .First(x => SyntaxFactory.AreEquivalent(x.Identifier, _methodIdentifier));
 
             // Get the semantic model for the document
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
@@ -295,14 +296,14 @@ namespace ExtractMethodParametersLib
 
             SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-            Location srcMethodIdentifierLocation = _methodIdentifier.GetLocation();
-            MethodDeclarationSyntax srcMethodSyntax = root.FindNode(srcMethodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
+            MethodDeclarationSyntax methodSyntax = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                .First(x => SyntaxFactory.AreEquivalent(x.Identifier, _methodIdentifier));
 
             // Get the semantic model for the syntax node
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
             // Get the method symbol from the syntax node
-            IMethodSymbol srcMethodSymbol = semanticModel.GetDeclaredSymbol(srcMethodSyntax);
+            IMethodSymbol srcMethodSymbol = semanticModel.GetDeclaredSymbol(methodSyntax);
 
             _allReferences = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, solution, cancellationToken).ConfigureAwait(false);
 
@@ -477,14 +478,14 @@ namespace ExtractMethodParametersLib
 
             SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-            Location srcMethodIdentifierLocation = _methodIdentifier.GetLocation();
-            MethodDeclarationSyntax srcMethodSyntax = root.FindNode(srcMethodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
+            MethodDeclarationSyntax methodSyntax = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                .First(x => SyntaxFactory.AreEquivalent(x.Identifier, _methodIdentifier));
 
             // Get the semantic model for the syntax node
             SemanticModel srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
             // Get the method symbol from the syntax node
-            IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(srcMethodSyntax);
+            IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(methodSyntax);
 
             Dictionary<string, PropertyDeclarationSyntax> classProps = classDeclaration.Members.OfType<PropertyDeclarationSyntax>()
                 .ToDictionary(prop => prop.GetAnnotations(AnnotationKind.ParamName.ToString()).First().Data, prop => prop);
@@ -674,8 +675,8 @@ namespace ExtractMethodParametersLib
 
             SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-            Location methodIdentifierLocation = _methodIdentifier.GetLocation();
-            MethodDeclarationSyntax methodSyntax = root.FindNode(methodIdentifierLocation.SourceSpan) as MethodDeclarationSyntax;
+            MethodDeclarationSyntax methodSyntax = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                .First(x => SyntaxFactory.AreEquivalent(x.Identifier, _methodIdentifier));
 
             #region fix method signature
 
