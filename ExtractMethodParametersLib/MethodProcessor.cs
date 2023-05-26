@@ -638,7 +638,10 @@ namespace ExtractMethodParametersLib
 
                     SyntaxNode newRoot = editor.GetChangedRoot();
 
-                    newRoot = Formatter.Format(newRoot, _solution.Workspace, null, cancellationToken);
+                    if (!_isPreview) //do not format the current document in preview mode to keep the preview small
+                    {
+                        newRoot = Formatter.Format(newRoot, _solution.Workspace, null, cancellationToken); 
+                    }
 
                     _solution = _solution.WithDocumentSyntaxRoot(document.Id, newRoot);
                 }
