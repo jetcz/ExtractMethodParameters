@@ -18,34 +18,6 @@ namespace ExtractMethodParametersLib
 {
     internal class MethodProcessor
     {
-        private readonly bool _isPreview;
-        private readonly DocumentId _documentId;
-        private readonly MethodDeclarationSyntax _methodSyntax;
-
-        private Solution _solution;
-        private IEnumerable<ReferencedSymbol> _allReferences;
-        private ExpressionSyntaxComparer _expressionSyntaxComparer;
-        private List<ParameterSyntax> _parameters;
-
-        private readonly bool _UseIndividualAssigmentStatements = true;
-
-        /// <summary>
-        /// Processes selced method
-        /// </summary>
-        /// <param name="isPreview">true if we are in preview (just the current document), false for the actual code modification in whole solution</param>
-        /// <param name="document"></param>
-        /// <param name="methodSyntax"></param>
-        /// <param name="parameters">selected parameters</param>
-        /// <exception cref="ArgumentNullException"></exception>
-        public MethodProcessor(bool isPreview, Document document, MethodDeclarationSyntax methodSyntax, List<ParameterSyntax> parameters)
-        {
-            _isPreview = isPreview;
-            _documentId = document.Id ?? throw new ArgumentNullException(nameof(document));
-            _solution = document.Project.Solution ?? throw new ArgumentNullException(nameof(document));
-            _methodSyntax = methodSyntax ?? throw new ArgumentNullException(nameof(methodSyntax));
-            _parameters = parameters ?? throw new ArgumentNullException(nameof(parameters));
-        }
-
         /*
 
          _UseIndividualAssigmentStatements = true
@@ -64,15 +36,45 @@ namespace ExtractMethodParametersLib
             };
 
          */
+        private readonly bool _UseIndividualAssigmentStatements = true;
+
+        private readonly bool _isPreview;
+        private readonly DocumentId _documentId;
+        private readonly MethodDeclarationSyntax _methodSyntax;
+        private Solution _solution;
+        private List<ParameterSyntax> _parameters;
+        private ExpressionSyntaxComparer _expressionSyntaxComparer;
+        private IEnumerable<ReferencedSymbol> _allReferences;
+
+        /// <summary>
+        /// Processes selced method
+        /// </summary>
+        /// <param name="isPreview">true if we are in preview (just the current document), false for the actual code modification in whole solution</param>
+        /// <param name="document"></param>
+        /// <param name="methodSyntax"></param>
+        /// <param name="parameters">user selected parameters</param>
+        /// <exception cref="ArgumentNullException"></exception>
+        public MethodProcessor(bool isPreview, Document document, MethodDeclarationSyntax methodSyntax, List<ParameterSyntax> parameters)
+        {
+            _isPreview = isPreview;
+            _documentId = document.Id ?? throw new ArgumentNullException(nameof(document));
+            _solution = document.Project.Solution ?? throw new ArgumentNullException(nameof(document));
+            _methodSyntax = methodSyntax ?? throw new ArgumentNullException(nameof(methodSyntax));
+            _parameters = parameters ?? throw new ArgumentNullException(nameof(parameters));
+            _expressionSyntaxComparer = new ExpressionSyntaxComparer();
+        }
+
 
         /// <summary>
         /// Do the magic
         /// </summary>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        internal async Task<Solution> Process(CancellationToken cancellationToken)
+        internal async Task<Solution> ProcessAsync(CancellationToken cancellationToken)
         {
+#if DEBUG
             Stopwatch sw = Stopwatch.StartNew();
+#endif
 
             _expressionSyntaxComparer = new ExpressionSyntaxComparer();
 
@@ -82,10 +84,10 @@ namespace ExtractMethodParametersLib
 
             _solution = await ModifyMethodReferencesAsync(classDeclaration, cancellationToken);
 
-            _solution = await ModifyMethodDefinitionAsync(classDeclaration, cancellationToken);
-
+#if DEBUG
             sw.Stop();
             Debug.WriteLine($"{nameof(ExtractMethodParametersCodeRefactoringProvider)} isPreview={_isPreview} elapsed={sw.Elapsed}");
+#endif
 
             //is this needed?
             _allReferences = null;
@@ -140,22 +142,28 @@ namespace ExtractMethodParametersLib
             // Get the semantic model for the document
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
-            ClassDeclarationSyntax enclosingClass = methodSyntax.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
-            InterfaceDeclarationSyntax enclosingInterface = methodSyntax.Ancestors().OfType<InterfaceDeclarationSyntax>().FirstOrDefault();
-
-            INamedTypeSymbol enclosingClassSymbol = semanticModel.GetDeclaredSymbol(enclosingClass);
+            TypeDeclarationSyntax enclosingType = methodSyntax.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
 
             // create class name       
-            string uniqueMyClassName;
+            string uniqueMyClassName = $"{methodSyntax.Identifier}Args";
+            string enclosingTypeName = "";
+            if (enclosingType != null)
             {
-                string name = $"{methodSyntax.Identifier}Args";
+                INamedTypeSymbol enclosingTypeSymbol = semanticModel.GetDeclaredSymbol(enclosingType);
+                enclosingTypeName = enclosingTypeSymbol.Name;
+
+                string name = uniqueMyClassName;
                 int i = 0;
-                uniqueMyClassName = name;
-                while (enclosingClassSymbol.GetTypeMembers(uniqueMyClassName).Any())
+                while (enclosingTypeSymbol.GetTypeMembers(uniqueMyClassName).Any())
                 {
                     i++;
                     uniqueMyClassName = $"{name}{i}";
                 }
+            }
+            else
+            {
+                //checking the whole solution would be too expensive
+                uniqueMyClassName += new Random().Next(0, 100).ToString(); //this is good enough
             }
 
             //do not try to figure out default property initializers in preview mode
@@ -172,7 +180,7 @@ namespace ExtractMethodParametersLib
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                 .WithMembers(SyntaxFactory.List(properties))
                 .WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment))
-                .WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.EnclosingType.ToString(), enclosingClassSymbol.Name));
+                .WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.EnclosingType.ToString(), enclosingTypeName));
         }
 
         /// <summary>
@@ -237,7 +245,6 @@ namespace ExtractMethodParametersLib
             }
         }
 
-
         /// <summary>
         /// Analyze solution for the most common parameter values
         /// </summary>
@@ -295,19 +302,21 @@ namespace ExtractMethodParametersLib
                         }
 
                         //do not consider unit tests as source for default values
-                        var isTestMethod = syntaxNode.Ancestors()
+                        bool isTestMethod() =>
+                            syntaxNode.Ancestors()
                             .OfType<MethodDeclarationSyntax>()
                             .SelectMany(x => x.AttributeLists)
                             .SelectMany(x => x.Attributes)
                             .Any(x => x.Name.ToString() == "TestMethod");
 
-                        var isTestClass = syntaxNode.Ancestors()
+                        bool isTestClass() =>
+                            syntaxNode.Ancestors()
                             .OfType<ClassDeclarationSyntax>()
                             .SelectMany(x => x.AttributeLists)
                             .SelectMany(x => x.Attributes)
                             .Any(x => x.Name.ToString() == "TestClass");
 
-                        if (isTestMethod || isTestClass)
+                        if (isTestMethod() || isTestClass())
                         {
                             continue;
                         }
@@ -443,23 +452,22 @@ namespace ExtractMethodParametersLib
         /// <exception cref="Exception"></exception>
         private async Task<Solution> ModifyMethodReferencesAsync(ClassDeclarationSyntax classDeclaration, CancellationToken cancellationToken)
         {
-            //get the method symbol to find references for this method     
             Document document = _solution.GetDocument(_documentId);
 
             SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
+            SyntaxEditor editor = new SyntaxEditor(root, _solution.Workspace.Services);
+
             MethodDeclarationSyntax methodSyntax = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
                 .First(x => SyntaxFactory.AreEquivalent(x, _methodSyntax));
 
-            // Get the semantic model for the syntax node
             SemanticModel srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-
-            // Get the method symbol from the syntax node
             IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(methodSyntax);
 
             Dictionary<string, PropertyDeclarationSyntax> classProps = classDeclaration.Members.OfType<PropertyDeclarationSyntax>()
                 .ToDictionary(prop => prop.GetAnnotations(AnnotationKind.ParamName.ToString()).First().Data, prop => prop);
 
+            //get referecnces
             IEnumerable<ReferencedSymbol> references;
             if (_isPreview)
             {
@@ -475,195 +483,101 @@ namespace ExtractMethodParametersLib
                 throw new Exception($"{nameof(_allReferences)} not initialized");
             }
 
-            references = references.OrderBy(x => x.Locations.Count());
+            IEnumerable<IGrouping<DocumentId, ReferencedSymbol>> referencesWithIdsGroups = await AssignDocumentIdsToReferencesAsync(references, cancellationToken).ConfigureAwait(false);
 
-            foreach (ReferencedSymbol reference in references)
+            //method which populates document, root and editor by the document id if needed
+            async void RefreshValuesByDocumentContext(DocumentId documentId)
             {
-                //do not modify interface
-                ////it might be interface member
-                //if (reference.Locations.Count() == 0)
-                //{
-                //    ISymbol methodSymbol = reference.Definition;
-
-                //    if (methodSymbol.ContainingType?.TypeKind == TypeKind.Interface)
-                //    {
-                //        methodSyntax = methodSymbol.DeclaringSyntaxReferences.First().GetSyntax() as MethodDeclarationSyntax;                    
-
-                //        root = await methodSyntax.SyntaxTree.GetRootAsync(cancellationToken).ConfigureAwait(false);
-
-                //        document = solution.GetDocument(root.SyntaxTree);
-
-                //        SyntaxEditor editor = new SyntaxEditor(root, solution.Workspace.Services);
-
-                //        MethodDeclarationSyntax newMethodSyntax = ModifyMethodDeclaration(methodSyntax, classDeclaration, out _);
-
-                //        editor.ReplaceNode(methodSyntax, newMethodSyntax.NormalizeWhitespace());
-
-                //        SyntaxNode newRoot = editor.GetChangedRoot();
-
-                //        newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken);                        
-
-                //        solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);                      
-
-                //    }
-
-                //    continue;
-                //}
-
-
-                IEnumerable<IGrouping<DocumentId, ReferenceLocation>> groupsByDoc = reference.Locations.GroupBy(x => x.Document.Id);
-
-                foreach (IGrouping<DocumentId, ReferenceLocation> groupByDoc in groupsByDoc)
+                if (documentId != document.Id)
                 {
-                    if (groupByDoc.Key != document.Id)
-                    {
-                        document = _solution.GetDocument(groupByDoc.Key);
+                    document = _solution.GetDocument(documentId);
 
-                        root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                    }
+                    root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-                    SyntaxEditor editor = new SyntaxEditor(root, _solution.Workspace.Services);
-
-                    int variableCount = 0;
-                    foreach (ReferenceLocation location in groupByDoc)
-                    {
-                        SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
-                        InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-
-                        //invocation might be null if the method is referenced e.g. in xml comment as <see cref...
-                        if (invocation is null)
-                        {
-                            continue;
-                        }
-
-                        //find a block syntax where we put out new variable, we insert int before the target which should be expression syntax                
-                        SyntaxNode target = invocation.Parent;
-                        while (!(target.Parent is BlockSyntax))
-                        {
-                            target = target.Parent;
-                        }
-                        BlockSyntax block = target.Parent as BlockSyntax;
-
-                        // scan the code block if there is the same variable already, create unique name
-                        IEnumerable<VariableDeclaratorSyntax> variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
-
-                        // create object name       
-                        string uniqueVariableName;
-                        do
-                        {
-                            string ordinal = variableCount == 0 ? "" : variableCount.ToString();
-                            uniqueVariableName = $"args{ordinal}";
-                            variableCount++;
-
-                        } while (variables.Any(x => x.Identifier.ValueText == uniqueVariableName));
-
-                        SyntaxToken argsVar = SyntaxFactory.Identifier(uniqueVariableName);
-
-                        #region build class body initializer
-
-                        // Build initializer expression for the new args object
-                        InitializerExpressionSyntax initializerExpression = SyntaxFactory.InitializerExpression(
-                            SyntaxKind.ObjectInitializerExpression,
-                            SyntaxFactory.SeparatedList<ExpressionSyntax>());
-
-                        List<ArgumentSyntax> newArgsForMethodInvocation = new List<ArgumentSyntax>();
-                        for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
-                        {
-                            ArgumentSyntax argument = invocation.ArgumentList.Arguments[i];
-
-                            //get parameters either by index or name (if the method call has named paramters)
-                            IParameterSymbol parameter = argument.NameColon is null ?
-                                srcMethodSymbol.Parameters[i]
-                                : srcMethodSymbol.Parameters.First(p => p.Name == argument.NameColon.Name.Identifier.ValueText);
-
-                            if (!classProps.TryGetValue(parameter.Name, out PropertyDeclarationSyntax prop))
-                            {
-                                newArgsForMethodInvocation.Add(argument); //keep the method param as is, we do not have it in our new class
-                                continue;
-                            }
-
-                            //do not initialize property if the property has the same default value as the current method parameter
-                            if (_expressionSyntaxComparer.EqualsForInit(prop.Initializer?.Value, argument.Expression))
-                            {
-                                continue; // skip this property assignment
-                            }
-
-                            ExpressionSyntax leftSide;
-                            if (_UseIndividualAssigmentStatements)
-                            {
-                                leftSide = SyntaxFactory.MemberAccessExpression(
-                                    SyntaxKind.SimpleMemberAccessExpression,
-                                    SyntaxFactory.IdentifierName(argsVar),
-                                    SyntaxFactory.IdentifierName(prop.Identifier));
-                            }
-                            else
-                            {
-                                leftSide = SyntaxFactory.IdentifierName(prop.Identifier);
-                            }
-
-                            ExpressionSyntax rightSide = argument.Expression;
-
-                            // Create a syntax node for the property assignment
-                            AssignmentExpressionSyntax propertyAssignment = SyntaxFactory.AssignmentExpression(SyntaxKind.SimpleAssignmentExpression, leftSide, rightSide)
-                                .WithLeadingTrivia(SyntaxFactory.LineFeed)
-                                .WithoutTrailingTrivia();
-
-                            // Add the property assignment to the initializer expression
-                            initializerExpression = initializerExpression.AddExpressions(propertyAssignment);
-                        }
-
-                        #endregion
-
-                        newArgsForMethodInvocation.Insert(0, SyntaxFactory.Argument(SyntaxFactory.IdentifierName(argsVar)));
-
-                        // Replace the method invocation with the new syntax
-                        InvocationExpressionSyntax newInvocation = invocation.WithArgumentList(SyntaxFactory.ArgumentList(
-                            SyntaxFactory.SeparatedList(newArgsForMethodInvocation)
-                        ));
-
-                        // Create a variable to hold the arguments class instance
-
-                        string myClassType = GetTypeForArgsVariable(classDeclaration, syntaxNode);
-
-                        ObjectCreationExpressionSyntax objectCreationExpression = SyntaxFactory.ObjectCreationExpression(
-                                    SyntaxFactory.ParseTypeName(myClassType))
-                                    .WithNewKeyword(SyntaxFactory.Token(SyntaxKind.NewKeyword)
-                                    .WithTrailingTrivia(SyntaxFactory.Space))
-                                    .WithArgumentList(SyntaxFactory.ArgumentList());
-
-                        if (!_UseIndividualAssigmentStatements)
-                        {
-                            objectCreationExpression = objectCreationExpression.WithInitializer(initializerExpression);
-                        }
-
-                        //declaration of the variable
-                        LocalDeclarationStatementSyntax argsVarDeclStatement = SyntaxFactory.LocalDeclarationStatement(
-                            SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName("var"))
-                            .WithVariables(SyntaxFactory.SingletonSeparatedList(
-                                SyntaxFactory.VariableDeclarator(argsVar)
-                                .WithInitializer(SyntaxFactory.EqualsValueClause(objectCreationExpression))))
-                            );
-
-                        editor.InsertBefore(target, argsVarDeclStatement);
-
-                        if (_UseIndividualAssigmentStatements)
-                        {
-                            editor.InsertBefore(target, initializerExpression.Expressions.Select(x => SyntaxFactory.ExpressionStatement(x)));
-                        }
-
-                        editor.ReplaceNode(invocation, newInvocation.NormalizeWhitespace());
-                    }
-
-                    SyntaxNode newRoot = editor.GetChangedRoot();
-
-                    if (!_isPreview) //do not format the current document in preview mode to keep the preview small
-                    {
-                        newRoot = Formatter.Format(newRoot, _solution.Workspace, null, cancellationToken);
-                    }
-
-                    _solution = _solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+                    editor = new SyntaxEditor(root, _solution.Workspace.Services);
                 }
             }
+
+            //method which saves changed editor to solution
+            void SaveChanges()
+            {
+                SyntaxNode newRoot = editor.GetChangedRoot();
+
+                if (!_isPreview) //do not format the current document in preview mode to keep the preview small
+                {
+                    newRoot = Formatter.Format(newRoot, _solution.Workspace, null, cancellationToken);
+                }
+
+                _solution = _solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+            }
+
+            //we are trying to minimize calls to RefreshValuesByDocumentContext (getsyntaxroot) -> we try to modify the given document only once
+
+            //first process documents where we have method declarations (references)
+            foreach (IGrouping<DocumentId, ReferencedSymbol> referencesWithIdsGroup in referencesWithIdsGroups)
+            {
+                RefreshValuesByDocumentContext(referencesWithIdsGroup.Key);
+
+                //get all locations in the same document which we are working with now
+                IEnumerable<ReferenceLocation> documentLocationsGroup = from rf in references
+                                                                        from location in rf.Locations
+                                                                        where location.Document.Id == referencesWithIdsGroup.Key
+                                                                        select location;
+
+                ModifyLocations(classDeclaration, root, editor, srcMethodSymbol, classProps, documentLocationsGroup);
+
+                #region modify method declarations
+
+                //firs process documents where we have method declarations
+                foreach (ReferencedSymbol reference in referencesWithIdsGroup)
+                {
+                    MethodDeclarationSyntax oldMethodSyntax = reference.Definition.DeclaringSyntaxReferences.First().GetSyntax() as MethodDeclarationSyntax;
+
+                    MethodDeclarationSyntax newMethodSyntax = GetNewMethodDefinition(oldMethodSyntax, classDeclaration);
+
+                    editor.ReplaceNode(oldMethodSyntax, newMethodSyntax); //replace method declaration, typically we'll do this just once, but if there is and interface in the game, we might be working with multiple methods
+
+                    //put the class declaration near the place where user selected the parameters
+                    if (SymbolEqualityComparer.Default.Equals(reference.Definition, srcMethodSymbol))
+                    {
+                        TypeDeclarationSyntax enclosingTypeDeclarationSyntax = oldMethodSyntax?.Ancestors()?.OfType<TypeDeclarationSyntax>()?.FirstOrDefault();
+                        if (enclosingTypeDeclarationSyntax != null)
+                        {
+                            switch (enclosingTypeDeclarationSyntax)
+                            {
+                                case ClassDeclarationSyntax _:
+                                    editor.InsertBefore(newMethodSyntax, classDeclaration);
+                                    break;
+                                case InterfaceDeclarationSyntax _:
+                                    editor.InsertBefore(enclosingTypeDeclarationSyntax, classDeclaration);
+                                    break;
+                                default:
+                                    throw new Exception($"Unknown enclosing type {enclosingTypeDeclarationSyntax.GetType()}");
+                            }
+                        }
+                    }
+                }
+
+                #endregion
+
+                SaveChanges();
+            }
+
+            //then process documents where we have just references (locations) and not method declarations
+            IEnumerable<IGrouping<DocumentId, ReferenceLocation>> otherLocationsGroups = from rf in references
+                                                                                         from location in rf.Locations
+                                                                                         where !referencesWithIdsGroups.Any(x => x.Key == location.Document.Id)
+                                                                                         group location by location.Document.Id;
+
+            foreach (IGrouping<DocumentId, ReferenceLocation> documentLocationsGroup in otherLocationsGroups)
+            {
+                RefreshValuesByDocumentContext(documentLocationsGroup.Key);
+
+                ModifyLocations(classDeclaration, root, editor, srcMethodSymbol, classProps, documentLocationsGroup);
+
+                SaveChanges();
+            }
+
 
             return _solution;
         }
@@ -671,20 +585,12 @@ namespace ExtractMethodParametersLib
         /// <summary>
         /// Modify method definition - signature and references to the parameters in the body of the method
         /// </summary>
+        /// <param name="methodSyntax"></param>
         /// <param name="classDeclaration"></param>
-        /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        private async Task<Solution> ModifyMethodDefinitionAsync(ClassDeclarationSyntax classDeclaration, CancellationToken cancellationToken)
+        private MethodDeclarationSyntax GetNewMethodDefinition(MethodDeclarationSyntax methodSyntax, ClassDeclarationSyntax classDeclaration)
         {
-            Document document = _solution.GetDocument(_documentId);
-
-            SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-
-            MethodDeclarationSyntax methodSyntax = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
-                .First(x => SyntaxFactory.AreEquivalent(x, _methodSyntax));
-
-
-            #region fix method signature
+            #region fix method signature            
 
             // Get the list of parameters from the method's syntax node
             ParameterListSyntax oldParameterList = methodSyntax.DescendantNodes().OfType<ParameterListSyntax>().First();
@@ -703,7 +609,7 @@ namespace ExtractMethodParametersLib
 
             // Get the type of the class
             //IdentifierNameSyntax className = SyntaxFactory.IdentifierName(classDeclaration.Identifier);
-            var type = GetTypeForArgsVariable(classDeclaration, methodSyntax);
+            string type = GetTypeForArgsVariable(classDeclaration, methodSyntax);
 
             TypeSyntax classType = SyntaxFactory.ParseTypeName(type);
 
@@ -716,8 +622,7 @@ namespace ExtractMethodParametersLib
             ParameterListSyntax newParameterList = SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(newParameters));
 
             // Replace the old parameter list with the new one in the method's syntax node
-            MethodDeclarationSyntax newMethodSyntax = methodSyntax.ReplaceNode(oldParameterList, newParameterList);
-            newMethodSyntax = newMethodSyntax.WithParameterList(newParameterList);
+            MethodDeclarationSyntax newMethodSyntax = methodSyntax.ReplaceNode(oldParameterList, newParameterList).WithParameterList(newParameterList);
 
             #endregion
 
@@ -759,6 +664,7 @@ namespace ExtractMethodParametersLib
 
             #region fix method body
 
+            //interface method doesnt have body
             // Replace all references to the old parameters with references to the new args parameter
             IEnumerable<IdentifierNameSyntax> nodesToReplace = newMethodSyntax.DescendantNodes()
                 .OfType<IdentifierNameSyntax>()
@@ -798,16 +704,185 @@ namespace ExtractMethodParametersLib
 
             #endregion
 
-            SyntaxEditor editor = new SyntaxEditor(root, _solution.Workspace.Services);
+            return newMethodSyntax;
+        }
 
-            editor.ReplaceNode(methodSyntax, newMethodSyntax);
-            editor.InsertBefore(newMethodSyntax, classDeclaration);
+        /// <summary>
+        /// Modify method references
+        /// </summary>
+        /// <param name="classDeclaration"></param>
+        /// <param name="root"></param>
+        /// <param name="editor"></param>
+        /// <param name="srcMethodSymbol"></param>
+        /// <param name="classProps"></param>
+        /// <param name="thisDocumentLocations"></param>
+        private void ModifyLocations(ClassDeclarationSyntax classDeclaration, SyntaxNode root, SyntaxEditor editor, IMethodSymbol srcMethodSymbol
+            , Dictionary<string, PropertyDeclarationSyntax> classProps, IEnumerable<ReferenceLocation> thisDocumentLocations)
+        {
+            int variableCount = 0;
+            foreach (ReferenceLocation location in thisDocumentLocations)
+            {
+                SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
+                InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
 
-            SyntaxNode newRoot = editor.GetChangedRoot();
+                //invocation might be null if the method is referenced e.g. in xml comment as <see cref...
+                if (invocation is null)
+                {
+                    continue;
+                }
 
-            //newRoot = Formatter.Format(newRoot, solution.Workspace, null, cancellationToken); //this produces huge preview
+                //find a block syntax where we put out new variable, we insert int before the target which should be expression syntax                
+                SyntaxNode target = invocation.Parent;
+                while (!(target.Parent is BlockSyntax))
+                {
+                    target = target.Parent;
+                }
+                BlockSyntax block = target.Parent as BlockSyntax;
 
-            return _solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+                // scan the code block if there is the same variable already, create unique name
+                IEnumerable<VariableDeclaratorSyntax> variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
+
+                // create object name       
+                string uniqueVariableName;
+                do
+                {
+                    string ordinal = variableCount == 0 ? "" : variableCount.ToString();
+                    uniqueVariableName = $"args{ordinal}";
+                    variableCount++;
+
+                } while (variables.Any(x => x.Identifier.ValueText == uniqueVariableName));
+
+                SyntaxToken argsVar = SyntaxFactory.Identifier(uniqueVariableName);
+
+                #region build class body initializer
+
+                // Build initializer expression for the new args object
+                InitializerExpressionSyntax initializerExpression = SyntaxFactory.InitializerExpression(
+                    SyntaxKind.ObjectInitializerExpression,
+                    SyntaxFactory.SeparatedList<ExpressionSyntax>());
+
+                List<ArgumentSyntax> newArgsForMethodInvocation = new List<ArgumentSyntax>();
+                for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+                {
+                    ArgumentSyntax argument = invocation.ArgumentList.Arguments[i];
+
+                    //get parameters either by index or name (if the method call has named paramters)
+                    IParameterSymbol parameter = argument.NameColon is null ?
+                        srcMethodSymbol.Parameters[i]
+                        : srcMethodSymbol.Parameters.First(p => p.Name == argument.NameColon.Name.Identifier.ValueText);
+
+                    if (!classProps.TryGetValue(parameter.Name, out PropertyDeclarationSyntax prop))
+                    {
+                        newArgsForMethodInvocation.Add(argument); //keep the method param as is, we do not have it in our new class
+                        continue;
+                    }
+
+                    //do not initialize property if the property has the same default value as the current method parameter
+                    if (_expressionSyntaxComparer.EqualsForInit(prop.Initializer?.Value, argument.Expression))
+                    {
+                        continue; // skip this property assignment
+                    }
+
+                    ExpressionSyntax leftSide;
+                    if (_UseIndividualAssigmentStatements)
+                    {
+                        leftSide = SyntaxFactory.MemberAccessExpression(
+                            SyntaxKind.SimpleMemberAccessExpression,
+                            SyntaxFactory.IdentifierName(argsVar),
+                            SyntaxFactory.IdentifierName(prop.Identifier));
+                    }
+                    else
+                    {
+                        leftSide = SyntaxFactory.IdentifierName(prop.Identifier);
+                    }
+
+                    ExpressionSyntax rightSide = argument.Expression;
+
+                    // Create a syntax node for the property assignment
+                    AssignmentExpressionSyntax propertyAssignment = SyntaxFactory.AssignmentExpression(SyntaxKind.SimpleAssignmentExpression, leftSide, rightSide)
+                        .WithLeadingTrivia(SyntaxFactory.LineFeed)
+                        .WithoutTrailingTrivia();
+
+                    // Add the property assignment to the initializer expression
+                    initializerExpression = initializerExpression.AddExpressions(propertyAssignment);
+                }
+
+                #endregion
+
+                newArgsForMethodInvocation.Insert(0, SyntaxFactory.Argument(SyntaxFactory.IdentifierName(argsVar)));
+
+                // Replace the method invocation with the new syntax
+                InvocationExpressionSyntax newInvocation = invocation.WithArgumentList(SyntaxFactory.ArgumentList(
+                    SyntaxFactory.SeparatedList(newArgsForMethodInvocation)
+                ));
+
+                // Create a variable to hold the arguments class instance
+                string myClassType = GetTypeForArgsVariable(classDeclaration, syntaxNode);
+
+                ObjectCreationExpressionSyntax objectCreationExpression = SyntaxFactory.ObjectCreationExpression(
+                            SyntaxFactory.ParseTypeName(myClassType))
+                            .WithNewKeyword(SyntaxFactory.Token(SyntaxKind.NewKeyword)
+                            .WithTrailingTrivia(SyntaxFactory.Space))
+                            .WithArgumentList(SyntaxFactory.ArgumentList());
+
+                if (!_UseIndividualAssigmentStatements)
+                {
+                    objectCreationExpression = objectCreationExpression.WithInitializer(initializerExpression);
+                }
+
+                //declaration of the variable
+                LocalDeclarationStatementSyntax argsVarDeclStatement = SyntaxFactory.LocalDeclarationStatement(
+                    SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName("var"))
+                    .WithVariables(SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.VariableDeclarator(argsVar)
+                        .WithInitializer(SyntaxFactory.EqualsValueClause(objectCreationExpression))))
+                    );
+
+                //modify the syntax tree
+                editor.InsertBefore(target, argsVarDeclStatement);
+
+                if (_UseIndividualAssigmentStatements)
+                {
+                    editor.InsertBefore(target, initializerExpression.Expressions.Select(x => SyntaxFactory.ExpressionStatement(x)));
+                }
+
+                editor.ReplaceNode(invocation, newInvocation.NormalizeWhitespace());
+            }
+        }
+
+        /// <summary>
+        /// Find document id for each reference
+        /// </summary>
+        /// <param name="references"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        private async Task<IEnumerable<IGrouping<DocumentId, ReferencedSymbol>>> AssignDocumentIdsToReferencesAsync(IEnumerable<ReferencedSymbol> references, CancellationToken cancellationToken)
+        {
+            //this is not great for perfromance but we assume that there will be typically just one reference
+            //there might be more references when we work with interface
+
+            List<Grouping<DocumentId, ReferencedSymbol>> referenecesGroupedByDocumentId = new List<Grouping<DocumentId, ReferencedSymbol>>();
+
+            foreach (ReferencedSymbol reference in references)
+            {
+                SyntaxNode methodSyntax = reference.Definition.DeclaringSyntaxReferences.First().GetSyntax();
+
+                SyntaxNode root = await methodSyntax.SyntaxTree.GetRootAsync(cancellationToken).ConfigureAwait(false);
+
+                DocumentId documentId = _solution.GetDocument(root.SyntaxTree).Id;
+
+                Grouping<DocumentId, ReferencedSymbol> item = referenecesGroupedByDocumentId.Find(x => x.Key == documentId);
+                if (item is null)
+                {
+                    referenecesGroupedByDocumentId.Add(new Grouping<DocumentId, ReferencedSymbol>(documentId, new List<ReferencedSymbol> { reference }));
+                }
+                else
+                {
+                    item.Add(reference);
+                }
+            }
+
+            return referenecesGroupedByDocumentId;
         }
 
         /// <summary>
@@ -818,11 +893,13 @@ namespace ExtractMethodParametersLib
         /// <returns></returns>
         private string GetTypeForArgsVariable(ClassDeclarationSyntax classDeclaration, SyntaxNode location)
         {
-            var declaringTypeSyntax = location.Ancestors().OfType<TypeDeclarationSyntax>().First();
+            ClassDeclarationSyntax declaringClassSyntax = location.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
 
             string enclosingType = classDeclaration.GetAnnotations(AnnotationKind.EnclosingType.ToString()).First().Data;
 
-            if (declaringTypeSyntax.Identifier.Text == enclosingType)
+            if (declaringClassSyntax is null
+                || string.IsNullOrEmpty(enclosingType)
+                || declaringClassSyntax.Identifier.Text == enclosingType)
             {
                 return classDeclaration.Identifier.Text;
             }

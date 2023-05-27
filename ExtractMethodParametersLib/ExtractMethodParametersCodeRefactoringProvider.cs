@@ -34,10 +34,6 @@ namespace ExtractMethodParametersLib
                 .OfType<MethodDeclarationSyntax>()
                 .FirstOrDefault();
 
-            //only allow if the method is in class (ie. not interface)
-            if (methodSyntax?.Ancestors()?.OfType<ClassDeclarationSyntax>()?.FirstOrDefault() is null)
-                return;
-
             List<ParameterSyntax> parameterNodes = (from p in methodSyntax.ParameterList.Parameters
 
                                                     let hasGenericParam = (p.Type as GenericNameSyntax)?.TypeArgumentList?.Arguments //skip generics such as List<T> etc
@@ -47,7 +43,7 @@ namespace ExtractMethodParametersLib
 
                                                     where !hasGenericParam
                                                     where !p.Modifiers.Any(m => m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.ParamsKeyword)) //skip out and params
-                                                    where p.Span.IntersectsWith(context.Span) //get just selected text                                                                                                   //
+                                                    where p.Span.IntersectsWith(context.Span) //get just selected text
 
                                                     select p)
                                   .ToList();
@@ -58,7 +54,7 @@ namespace ExtractMethodParametersLib
 
             CustomCodeAction action = CustomCodeAction.Create("Extract method parameters", (cancellationToken, isPreview) =>
             {
-                return new MethodProcessor(isPreview, context.Document, methodSyntax, parameterNodes).Process(cancellationToken);             
+                return new MethodProcessor(isPreview, context.Document, methodSyntax, parameterNodes).ProcessAsync(cancellationToken);
             });
 
             context.RegisterRefactoring(action);
