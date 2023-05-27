@@ -444,7 +444,7 @@ namespace ExtractMethodParametersLib
         }
 
         /// <summary>
-        /// Changes method calls to reflect new method signature
+        /// Changes method definitions and calls to reflect new method signature
         /// </summary>
         /// <param name="classDeclaration"></param>
         /// <param name="cancellationToken"></param>
@@ -452,6 +452,8 @@ namespace ExtractMethodParametersLib
         /// <exception cref="Exception"></exception>
         private async Task<Solution> ModifyMethodReferencesAsync(ClassDeclarationSyntax classDeclaration, CancellationToken cancellationToken)
         {
+            #region preparation
+
             Document document = _solution.GetDocument(_documentId);
 
             SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
@@ -510,6 +512,10 @@ namespace ExtractMethodParametersLib
 
                 _solution = _solution.WithDocumentSyntaxRoot(document.Id, newRoot);
             }
+
+            #endregion
+
+            #region do do magic
 
             //we are trying to minimize calls to RefreshValuesByDocumentContext (getsyntaxroot) -> we try to modify the given document only once
 
@@ -578,8 +584,9 @@ namespace ExtractMethodParametersLib
                 SaveChanges();
             }
 
+            #endregion
 
-            return _solution;
+            return _solution;      
         }
 
         /// <summary>
@@ -590,7 +597,7 @@ namespace ExtractMethodParametersLib
         /// <returns></returns>
         private MethodDeclarationSyntax GetNewMethodDefinition(MethodDeclarationSyntax methodSyntax, ClassDeclarationSyntax classDeclaration)
         {
-            #region fix method signature            
+            #region modify method signature            
 
             // Get the list of parameters from the method's syntax node
             ParameterListSyntax oldParameterList = methodSyntax.DescendantNodes().OfType<ParameterListSyntax>().First();
@@ -626,7 +633,7 @@ namespace ExtractMethodParametersLib
 
             #endregion
 
-            #region fix xml comment
+            #region modify xml comment
 
             SyntaxTrivia xmlCommentTrivia = methodSyntax.GetLeadingTrivia().FirstOrDefault(t => t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia));
 
@@ -662,7 +669,7 @@ namespace ExtractMethodParametersLib
 
             #endregion
 
-            #region fix method body
+            #region modify method body
 
             //interface method doesnt have body
             // Replace all references to the old parameters with references to the new args parameter
