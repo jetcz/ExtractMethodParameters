@@ -108,11 +108,11 @@ namespace ExtractMethodParametersLib
 
             IPropertyNameNormalizer propertyNameNormalizer = PropertyNormalizerFactory.CreateNormalizer(solutionName);
 
-            IEnumerable<IGrouping<string, ParameterSyntax>> groups = _parameters.GroupBy(x => propertyNameNormalizer.Normalize(x.Identifier.ValueText));
+            var groups = _parameters.GroupBy(x => propertyNameNormalizer.Normalize(x.Identifier.ValueText));
 
-            foreach (IGrouping<string, ParameterSyntax> group in groups)
+            foreach (var group in groups)
             {
-                ParameterSyntax[] parameters = group.ToArray();
+                var parameters = group.ToArray();
                 string propertyName = group.Key;
 
                 for (int i = 0; i < parameters.Length; i++)
@@ -142,14 +142,14 @@ namespace ExtractMethodParametersLib
             // Get the semantic model for the document
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
-            TypeDeclarationSyntax enclosingType = methodSyntax.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
+            ClassDeclarationSyntax enclosingClass = methodSyntax.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
 
             // create class name       
             string uniqueMyClassName = $"{methodSyntax.Identifier}Args";
             string enclosingTypeName = "";
-            if (enclosingType != null)
+            if (enclosingClass != null)
             {
-                INamedTypeSymbol enclosingTypeSymbol = semanticModel.GetDeclaredSymbol(enclosingType);
+                INamedTypeSymbol enclosingTypeSymbol = semanticModel.GetDeclaredSymbol(enclosingClass);
                 enclosingTypeName = enclosingTypeSymbol.Name;
 
                 string name = uniqueMyClassName;
@@ -167,19 +167,21 @@ namespace ExtractMethodParametersLib
             }
 
             //do not try to figure out default property initializers in preview mode
-            Dictionary<string, ExpressionSyntax> defaultValues = _isPreview ? null : await GetDefaultValuesForPropertiesAsync(cancellationToken);
+            var defaultValues = _isPreview ? null : await GetDefaultValuesForPropertiesAsync(cancellationToken);
 
             // Find the XML comment trivia for the method
             SyntaxTrivia xmlCommentTrivia = methodSyntax.GetLeadingTrivia().FirstOrDefault(t => t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia));
 
-            IEnumerable<MemberDeclarationSyntax> properties = CreateProperties(defaultValues, xmlCommentTrivia.ToString());
+            string xmlMethodComment = xmlCommentTrivia.ToString();
 
-            string xmlComment = $"/// <summary>\n/// {methodSyntax.Identifier} arguments\n/// </summary>\n";
+            var properties = CreateProperties(defaultValues, xmlMethodComment);
+
+            string xmlClassComment = string.IsNullOrEmpty(xmlMethodComment) ? "" : $"/// <summary>\n/// {methodSyntax.Identifier} arguments\n/// </summary>\n";
 
             return SyntaxFactory.ClassDeclaration(uniqueMyClassName)
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                 .WithMembers(SyntaxFactory.List(properties))
-                .WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment))
+                .WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlClassComment))
                 .WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.EnclosingType.ToString(), enclosingTypeName));
         }
 
@@ -234,6 +236,7 @@ namespace ExtractMethodParametersLib
                 {
                     init = SyntaxFactory.EqualsValueClause(defaultValue);
                 }
+
                 if (init != null)
                 {
                     propertyDeclaration = propertyDeclaration
@@ -268,14 +271,14 @@ namespace ExtractMethodParametersLib
 
             _allReferences = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, _solution, cancellationToken).ConfigureAwait(false);
 
-            Dictionary<string, Dictionary<ExpressionSyntax, int>> paramsData = new Dictionary<string, Dictionary<ExpressionSyntax, int>>(_parameters.Count);
+            var paramsData = new Dictionary<string, Dictionary<ExpressionSyntax, int>>(_parameters.Count);
 
-            Dictionary<ExpressionSyntax, bool> usableAsDefaultExpressions = new Dictionary<ExpressionSyntax, bool>(_expressionSyntaxComparer);
+            var usableAsDefaultExpressions = new Dictionary<ExpressionSyntax, bool>(_expressionSyntaxComparer);
 
             //go through all references
             foreach (ReferencedSymbol reference in _allReferences)
             {
-                IEnumerable<IGrouping<DocumentId, ReferenceLocation>> groupsByDoc = reference.Locations.GroupBy(x => x.Document.Id);
+                var groupsByDoc = reference.Locations.GroupBy(x => x.Document.Id);
 
                 //group by document so that we do not load syntax tree for the same document repeatedly
                 foreach (IGrouping<DocumentId, ReferenceLocation> groupByDoc in groupsByDoc)
@@ -321,7 +324,7 @@ namespace ExtractMethodParametersLib
                             continue;
                         }
 
-                        //go throught all arguments
+                        //go through all arguments
                         for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
                         {
                             ArgumentSyntax argument = invocation.ArgumentList.Arguments[i];
@@ -393,9 +396,9 @@ namespace ExtractMethodParametersLib
                                                 break;
                                         }
                                     }
-
-                                    usableAsDefaultExpressions.Add(argument.Expression, canBeUsedAsDefaultInitializer);
                                 }
+
+                                usableAsDefaultExpressions.Add(argument.Expression, canBeUsedAsDefaultInitializer);
                             }
 
                             #endregion
@@ -426,11 +429,11 @@ namespace ExtractMethodParametersLib
             }
 
             //pick the most common parameter values
-            Dictionary<string, ExpressionSyntax> retval = new Dictionary<string, ExpressionSyntax>(_parameters.Count);
+            var retval = new Dictionary<string, ExpressionSyntax>(_parameters.Count);
 
-            foreach (KeyValuePair<string, Dictionary<ExpressionSyntax, int>> paramData in paramsData)
+            foreach (var paramData in paramsData)
             {
-                Dictionary<ExpressionSyntax, int> expressionOccurences = paramData.Value;
+                var expressionOccurences = paramData.Value;
 
                 ExpressionSyntax expression = expressionOccurences.OrderByDescending(x => x.Value).FirstOrDefault(x => x.Value > 1).Key; //take the value which is there at least twice
 
@@ -466,15 +469,14 @@ namespace ExtractMethodParametersLib
             SemanticModel srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
             IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(methodSyntax);
 
-            Dictionary<string, PropertyDeclarationSyntax> classProps = classDeclaration.Members.OfType<PropertyDeclarationSyntax>()
+            var classProps = classDeclaration.Members.OfType<PropertyDeclarationSyntax>()
                 .ToDictionary(prop => prop.GetAnnotations(AnnotationKind.ParamName.ToString()).First().Data, prop => prop);
 
             //get referecnces
             IEnumerable<ReferencedSymbol> references;
             if (_isPreview)
             {
-                ImmutableHashSet<Document> documents = _isPreview ? new[] { document }.ToImmutableHashSet() : null;
-                references = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, _solution, documents, cancellationToken).ConfigureAwait(false);
+                references = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, _solution, new[] { document }.ToImmutableHashSet(), cancellationToken).ConfigureAwait(false);
             }
             else if (_allReferences != null)
             {
@@ -485,7 +487,7 @@ namespace ExtractMethodParametersLib
                 throw new Exception($"{nameof(_allReferences)} not initialized");
             }
 
-            IEnumerable<IGrouping<DocumentId, ReferencedSymbol>> referencesWithIdsGroups = await AssignDocumentIdsToReferencesAsync(references, cancellationToken).ConfigureAwait(false);
+            var referencesWithIdsGroups = await AssignDocumentIdsToReferencesAsync(references, cancellationToken).ConfigureAwait(false);
 
             //method which populates document, root and editor by the document id if needed
             async void RefreshValuesByDocumentContext(DocumentId documentId)
@@ -515,33 +517,31 @@ namespace ExtractMethodParametersLib
 
             #endregion
 
-            #region do do magic
+            #region do the magic
 
-            //we are trying to minimize calls to RefreshValuesByDocumentContext (getsyntaxroot) -> we try to modify the given document only once
+            //we are trying to minimize calls to RefreshValuesByDocumentContext (getsyntaxroot) -> we modify the given document only once
 
             //first process documents where we have method declarations (references)
-            foreach (IGrouping<DocumentId, ReferencedSymbol> referencesWithIdsGroup in referencesWithIdsGroups)
+            foreach (var referencesWithIdsGroup in referencesWithIdsGroups)
             {
                 RefreshValuesByDocumentContext(referencesWithIdsGroup.Key);
 
                 //get all locations in the same document which we are working with now
-                IEnumerable<ReferenceLocation> documentLocationsGroup = from rf in references
-                                                                        from location in rf.Locations
-                                                                        where location.Document.Id == referencesWithIdsGroup.Key
-                                                                        select location;
+                var documentLocationsGroup = from rf in references
+                                             from location in rf.Locations
+                                             where location.Document.Id == referencesWithIdsGroup.Key
+                                             select location;
 
                 ModifyLocations(classDeclaration, root, editor, srcMethodSymbol, classProps, documentLocationsGroup);
 
                 #region modify method declarations
 
                 //firs process documents where we have method declarations
-                foreach (ReferencedSymbol reference in referencesWithIdsGroup)
+                foreach (var (reference, oldMethodSyntax) in referencesWithIdsGroup)
                 {
-                    MethodDeclarationSyntax oldMethodSyntax = reference.Definition.DeclaringSyntaxReferences.First().GetSyntax() as MethodDeclarationSyntax;
-
                     MethodDeclarationSyntax newMethodSyntax = GetNewMethodDefinition(oldMethodSyntax, classDeclaration);
 
-                    editor.ReplaceNode(oldMethodSyntax, newMethodSyntax); //replace method declaration, typically we'll do this just once, but if there is and interface in the game, we might be working with multiple methods
+                    editor.ReplaceNode(oldMethodSyntax, newMethodSyntax); //replace method declaration, typically we'll do this just once, but if there is an interface in the game, we might be working with multiple methods
 
                     //put the class declaration near the place where user selected the parameters
                     if (SymbolEqualityComparer.Default.Equals(reference.Definition, srcMethodSymbol))
@@ -570,12 +570,12 @@ namespace ExtractMethodParametersLib
             }
 
             //then process documents where we have just references (locations) and not method declarations
-            IEnumerable<IGrouping<DocumentId, ReferenceLocation>> otherLocationsGroups = from rf in references
-                                                                                         from location in rf.Locations
-                                                                                         where !referencesWithIdsGroups.Any(x => x.Key == location.Document.Id)
-                                                                                         group location by location.Document.Id;
+            var otherLocationsGroups = from rf in references
+                                       from location in rf.Locations
+                                       where !referencesWithIdsGroups.Any(x => x.Key == location.Document.Id)
+                                       group location by location.Document.Id;
 
-            foreach (IGrouping<DocumentId, ReferenceLocation> documentLocationsGroup in otherLocationsGroups)
+            foreach (var documentLocationsGroup in otherLocationsGroups)
             {
                 RefreshValuesByDocumentContext(documentLocationsGroup.Key);
 
@@ -586,7 +586,7 @@ namespace ExtractMethodParametersLib
 
             #endregion
 
-            return _solution;      
+            return _solution;
         }
 
         /// <summary>
@@ -603,7 +603,7 @@ namespace ExtractMethodParametersLib
             ParameterListSyntax oldParameterList = methodSyntax.DescendantNodes().OfType<ParameterListSyntax>().First();
 
             List<ParameterSyntax> newParameters = oldParameterList.Parameters
-                .Where(x => !_parameters.Any(y => y.Identifier.ValueText == x.Identifier.ValueText))
+                .Where(x => !_parameters.Exists(y => y.Identifier.ValueText == x.Identifier.ValueText))
                 .ToList();
 
             string parameterName = "args";
@@ -653,7 +653,7 @@ namespace ExtractMethodParametersLib
                     myString = Regex.Replace(myString, @"^\s*$[\r\n]*", "", RegexOptions.Multiline); //replace empty lines beacause chatgpt
 
                     //create entries for newly added params
-                    IEnumerable<string> newParametersStr = newParameters
+                    var newParametersStr = newParameters
                         .Where(x => !myString.Contains($"<param name=\"{x.Identifier.ValueText}\">"))
                         .Select(x => $"/// <param name=\"{x.Identifier.ValueText}\"></param>");
 
@@ -673,7 +673,7 @@ namespace ExtractMethodParametersLib
 
             //interface method doesnt have body
             // Replace all references to the old parameters with references to the new args parameter
-            IEnumerable<IdentifierNameSyntax> nodesToReplace = newMethodSyntax.DescendantNodes()
+            var nodesToReplace = newMethodSyntax.DescendantNodes()
                 .OfType<IdentifierNameSyntax>()
                 .Where(x => _parameters.Any(p => p.Identifier.ValueText == x.Identifier.ValueText));
 
@@ -744,10 +744,10 @@ namespace ExtractMethodParametersLib
                 {
                     target = target.Parent;
                 }
-                BlockSyntax block = target.Parent as BlockSyntax;
+                BlockSyntax block = target.Parent as BlockSyntax;            
 
                 // scan the code block if there is the same variable already, create unique name
-                IEnumerable<VariableDeclaratorSyntax> variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
+                var variables = block.DescendantNodes().OfType<VariableDeclarationSyntax>().SelectMany(x => x.Variables);
 
                 // create object name       
                 string uniqueVariableName;
@@ -858,34 +858,37 @@ namespace ExtractMethodParametersLib
         }
 
         /// <summary>
-        /// Find document id for each reference
+        /// Find document id for each reference/methodSyntax
         /// </summary>
         /// <param name="references"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        private async Task<IEnumerable<IGrouping<DocumentId, ReferencedSymbol>>> AssignDocumentIdsToReferencesAsync(IEnumerable<ReferencedSymbol> references, CancellationToken cancellationToken)
+        private async Task<IEnumerable<IGrouping<DocumentId, (ReferencedSymbol, MethodDeclarationSyntax)>>> AssignDocumentIdsToReferencesAsync(IEnumerable<ReferencedSymbol> references, CancellationToken cancellationToken)
         {
             //this is not great for perfromance but we assume that there will be typically just one reference
             //there might be more references when we work with interface
 
-            List<Grouping<DocumentId, ReferencedSymbol>> referenecesGroupedByDocumentId = new List<Grouping<DocumentId, ReferencedSymbol>>();
+            var referenecesGroupedByDocumentId = new List<Grouping<DocumentId, (ReferencedSymbol, MethodDeclarationSyntax)>>();
 
             foreach (ReferencedSymbol reference in references)
             {
-                SyntaxNode methodSyntax = reference.Definition.DeclaringSyntaxReferences.First().GetSyntax();
-
-                SyntaxNode root = await methodSyntax.SyntaxTree.GetRootAsync(cancellationToken).ConfigureAwait(false);
-
-                DocumentId documentId = _solution.GetDocument(root.SyntaxTree).Id;
-
-                Grouping<DocumentId, ReferencedSymbol> item = referenecesGroupedByDocumentId.Find(x => x.Key == documentId);
-                if (item is null)
+                foreach (SyntaxReference syntaxReference in reference.Definition.DeclaringSyntaxReferences) //should be almost always 1
                 {
-                    referenecesGroupedByDocumentId.Add(new Grouping<DocumentId, ReferencedSymbol>(documentId, new List<ReferencedSymbol> { reference }));
-                }
-                else
-                {
-                    item.Add(reference);
+                    MethodDeclarationSyntax methodSyntax = await syntaxReference.GetSyntaxAsync(cancellationToken) as MethodDeclarationSyntax;
+
+                    DocumentId documentId = _solution.GetDocumentId(syntaxReference.SyntaxTree);
+
+                    var item = referenecesGroupedByDocumentId.Find(x => x.Key == documentId);
+                    if (item is null)
+                    {
+                        var list = new List<(ReferencedSymbol, MethodDeclarationSyntax)> { (reference, methodSyntax) };
+                        var grouping = new Grouping<DocumentId, (ReferencedSymbol, MethodDeclarationSyntax)>(documentId, list);
+                        referenecesGroupedByDocumentId.Add(grouping);
+                    }
+                    else
+                    {
+                        item.Add((reference, methodSyntax));
+                    }
                 }
             }
 
