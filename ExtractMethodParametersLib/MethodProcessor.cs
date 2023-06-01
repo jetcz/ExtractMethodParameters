@@ -36,7 +36,7 @@ namespace ExtractMethodParametersLib
             };
 
          */
-        private readonly bool _UseIndividualAssigmentStatements = true;
+        private readonly bool _UseIndividualAssigmentStatements = true; //this would be nice to have in tools->options but I don't know how
 
         private readonly bool _isPreview;
         private readonly DocumentId _documentId;
@@ -47,7 +47,7 @@ namespace ExtractMethodParametersLib
         private IEnumerable<ReferencedSymbol> _allReferences;
 
         /// <summary>
-        /// Processes selced method
+        /// Processes selected method/parameters
         /// </summary>
         /// <param name="isPreview">true if we are in preview (just the current document), false for the actual code modification in whole solution</param>
         /// <param name="document"></param>
@@ -119,7 +119,8 @@ namespace ExtractMethodParametersLib
                 {
                     string ordinal = i == 0 ? "" : (i + 1).ToString();
 
-                    yield return parameters[i].WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.PropName.ToString(), $"{propertyName}{ordinal}"));
+                    SyntaxAnnotation propName = new SyntaxAnnotation(AnnotationKind.PropName.ToString(), $"{propertyName}{ordinal}");
+                    yield return parameters[i].WithAdditionalAnnotations(propName);
                 }
             }
         }
@@ -149,7 +150,7 @@ namespace ExtractMethodParametersLib
             string enclosingTypeName = "";
             if (enclosingClass != null)
             {
-                INamedTypeSymbol enclosingTypeSymbol = semanticModel.GetDeclaredSymbol(enclosingClass);
+                INamedTypeSymbol enclosingTypeSymbol = semanticModel.GetDeclaredSymbol(enclosingClass, cancellationToken);
                 enclosingTypeName = enclosingTypeSymbol.Name;
 
                 string name = uniqueMyClassName;
@@ -176,7 +177,8 @@ namespace ExtractMethodParametersLib
 
             var properties = CreateProperties(defaultValues, xmlMethodComment);
 
-            string xmlClassComment = string.IsNullOrEmpty(xmlMethodComment) ? "" : $"/// <summary>\n/// {methodSyntax.Identifier} arguments\n/// </summary>\n";
+            string xmlClassComment = string.IsNullOrEmpty(xmlMethodComment) ? ""
+                : $"/// <summary>{Environment.NewLine}/// {methodSyntax.Identifier} arguments{Environment.NewLine}/// </summary>{Environment.NewLine}";
 
             return SyntaxFactory.ClassDeclaration(uniqueMyClassName)
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
@@ -198,6 +200,8 @@ namespace ExtractMethodParametersLib
                 //declare the property
                 SyntaxToken identifier = SyntaxFactory.Identifier(par.GetAnnotations(AnnotationKind.PropName.ToString()).First().Data);
 
+                SyntaxAnnotation paramName = new SyntaxAnnotation(AnnotationKind.ParamName.ToString(), par.Identifier.ValueText);
+
                 PropertyDeclarationSyntax propertyDeclaration = SyntaxFactory.PropertyDeclaration(par.Type.WithoutTrivia(), identifier)
                     .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                     .WithAccessorList(SyntaxFactory.AccessorList(
@@ -209,7 +213,7 @@ namespace ExtractMethodParametersLib
                             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                         }
                         )))
-                    .WithAdditionalAnnotations(new SyntaxAnnotation(AnnotationKind.ParamName.ToString(), par.Identifier.ValueText));
+                    .WithAdditionalAnnotations(paramName);
 
                 #region xml comments for properties (steal them from the method xml comment)
 
@@ -220,7 +224,7 @@ namespace ExtractMethodParametersLib
                     int commentEndIndex = methodXmlComment.IndexOf($"</param>", parameterIndex);
 
                     string comment = methodXmlComment.Substring(commentStartIndex, commentEndIndex - commentStartIndex);
-                    string xmlComment = $"/// <summary>\n/// {comment}\n/// </summary>\n";
+                    string xmlComment = $"/// <summary>{Environment.NewLine}/// {comment}{Environment.NewLine}/// </summary>{Environment.NewLine}";
 
                     propertyDeclaration = propertyDeclaration.WithLeadingTrivia(SyntaxFactory.ParseLeadingTrivia(xmlComment));
                 }
@@ -267,7 +271,7 @@ namespace ExtractMethodParametersLib
             SemanticModel semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
 
             // Get the method symbol from the syntax node
-            IMethodSymbol srcMethodSymbol = semanticModel.GetDeclaredSymbol(methodSyntax);
+            IMethodSymbol srcMethodSymbol = semanticModel.GetDeclaredSymbol(methodSyntax, cancellationToken);
 
             _allReferences = await SymbolFinder.FindReferencesAsync(srcMethodSymbol, _solution, cancellationToken).ConfigureAwait(false);
 
@@ -334,17 +338,17 @@ namespace ExtractMethodParametersLib
                                 srcMethodSymbol.Parameters[i]
                                 : srcMethodSymbol.Parameters.First(p => p.Name == argument.NameColon.Name.Identifier.ValueText);
 
-                            if (!_parameters.Any(x => x.Identifier.ValueText == parameter.Name))
+                            if (!_parameters.Exists(x => x.Identifier.ValueText == parameter.Name))
                             {
                                 continue;
-                            }
+                            }    
 
                             //determine if the argument value can be used as default property initializer, ie. it is some literal, or static member accessor
                             bool canBeUsedAsDefaultInitializer = false;
 
                             #region can this argument be used as default property initializer?
 
-                            if (argument.Expression is LiteralExpressionSyntax)
+                            if (argument.Expression is LiteralExpressionSyntax) //including NullLiteralExpression
                             {
                                 canBeUsedAsDefaultInitializer = true;
                             }
@@ -437,7 +441,7 @@ namespace ExtractMethodParametersLib
 
                 ExpressionSyntax expression = expressionOccurences.OrderByDescending(x => x.Value).FirstOrDefault(x => x.Value > 1).Key; //take the value which is there at least twice
 
-                if (expression != null && !expression.IsKind(SyntaxKind.NullLiteralExpression))
+                if (expression != null)
                 {
                     retval.Add(paramData.Key, expression);
                 }
@@ -467,7 +471,7 @@ namespace ExtractMethodParametersLib
                 .First(x => SyntaxFactory.AreEquivalent(x, _methodSyntax));
 
             SemanticModel srcSemanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-            IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(methodSyntax);
+            IMethodSymbol srcMethodSymbol = srcSemanticModel.GetDeclaredSymbol(methodSyntax, cancellationToken);
 
             var classProps = classDeclaration.Members.OfType<PropertyDeclarationSyntax>()
                 .ToDictionary(prop => prop.GetAnnotations(AnnotationKind.ParamName.ToString()).First().Data, prop => prop);
@@ -657,7 +661,7 @@ namespace ExtractMethodParametersLib
                         .Where(x => !myString.Contains($"<param name=\"{x.Identifier.ValueText}\">"))
                         .Select(x => $"/// <param name=\"{x.Identifier.ValueText}\"></param>");
 
-                    string newParametersStrFragment = "\n" + string.Join("\n", newParametersStr);
+                    string newParametersStrFragment = Environment.NewLine + string.Join(Environment.NewLine, newParametersStr);
 
                     //insert the new params right after </summary> tag and also create leading /// which we lost for some reason lol
                     myString = $"/// {myString.Insert(index + "</summary>".Length, newParametersStrFragment).TrimStart()}";
@@ -726,11 +730,12 @@ namespace ExtractMethodParametersLib
         private void ModifyLocations(ClassDeclarationSyntax classDeclaration, SyntaxNode root, SyntaxEditor editor, IMethodSymbol srcMethodSymbol
             , Dictionary<string, PropertyDeclarationSyntax> classProps, IEnumerable<ReferenceLocation> thisDocumentLocations)
         {
-            int variableCount = 0;
+            int variableCount = 0; //it would be better to check just current block, but this is easier...
+
             foreach (ReferenceLocation location in thisDocumentLocations)
             {
                 SyntaxNode syntaxNode = root.FindNode(location.Location.SourceSpan);
-                InvocationExpressionSyntax invocation = syntaxNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+                InvocationExpressionSyntax invocation = syntaxNode?.AncestorsAndSelf()?.OfType<InvocationExpressionSyntax>()?.FirstOrDefault();
 
                 //invocation might be null if the method is referenced e.g. in xml comment as <see cref...
                 if (invocation is null)
@@ -738,7 +743,7 @@ namespace ExtractMethodParametersLib
                     continue;
                 }
 
-                //find a block syntax where we put out new variable, we insert int before the target which should be expression syntax                
+                //find a block syntax where we put our new variable, we insert it before the target which should be expression syntax                
                 SyntaxNode target = invocation.Parent;
                 while (!(target.Parent is BlockSyntax))
                 {

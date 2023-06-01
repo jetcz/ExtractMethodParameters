@@ -27,7 +27,7 @@ namespace ExtractMethodParametersLib
             SyntaxNode node = root.FindNode(context.Span);
 
             // Only offer a refactoring if the selected node is a type ParameterListSyntax
-            if (!(node is ParameterListSyntax parameterListSyntax))
+            if (!(node is ParameterListSyntax))
                 return;
 
             MethodDeclarationSyntax methodSyntax = node.AncestorsAndSelf()
