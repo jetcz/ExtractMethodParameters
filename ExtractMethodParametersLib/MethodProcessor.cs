@@ -542,11 +542,7 @@ namespace ExtractMethodParametersLib
 
                 //firs process documents where we have method declarations
                 foreach (var (reference, oldMethodSyntax) in referencesWithIdsGroup)
-                {
-                    MethodDeclarationSyntax newMethodSyntax = GetNewMethodDefinition(oldMethodSyntax, classDeclaration);
-
-                    editor.ReplaceNode(oldMethodSyntax, newMethodSyntax); //replace method declaration, typically we'll do this just once, but if there is an interface in the game, we might be working with multiple methods
-
+                { 
                     //put the class declaration near the place where user selected the parameters
                     if (SymbolEqualityComparer.Default.Equals(reference.Definition, srcMethodSymbol))
                     {
@@ -556,7 +552,7 @@ namespace ExtractMethodParametersLib
                             switch (enclosingTypeDeclarationSyntax)
                             {
                                 case ClassDeclarationSyntax _:
-                                    editor.InsertBefore(newMethodSyntax, classDeclaration);
+                                    editor.InsertBefore(oldMethodSyntax, classDeclaration);
                                     break;
                                 case InterfaceDeclarationSyntax _:
                                     editor.InsertBefore(enclosingTypeDeclarationSyntax, classDeclaration);
@@ -566,6 +562,11 @@ namespace ExtractMethodParametersLib
                             }
                         }
                     }
+
+                    //for some reason, this has to be after we add the classDeclaration before oldMethodSyntax, otherwise we get exception that newMethodSyntax is not part of the tree
+                    MethodDeclarationSyntax newMethodSyntax = GetNewMethodDefinition(oldMethodSyntax, classDeclaration);
+
+                    editor.ReplaceNode(oldMethodSyntax, newMethodSyntax); //replace method declaration, typically we'll do this just once, but if there is an interface in the game, we might be working with multiple methods
                 }
 
                 #endregion
